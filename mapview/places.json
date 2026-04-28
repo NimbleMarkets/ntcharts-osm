@@ -1,0 +1,45 @@
+[
+  {
+    "name": "CERN",
+    "description": "European Organization for Nuclear Research – Home of the Large Hadron Collider",
+    "lat": 46.234,
+    "lon": 6.046,
+    "zoom": 15,
+    "recommended": true
+  },
+  {
+    "name": "Mauna Kea Observatories",
+    "description": "World's premier astronomical observatory site on a dormant volcano in Hawaii",
+    "lat": 19.82,
+    "lon": -155.47,
+    "zoom": 13
+  },
+  {
+    "name": "Very Large Array",
+    "description": "Iconic radio telescope array in New Mexico (featured in Contact and other films)",
+    "lat": 34.079,
+    "lon": -107.618,
+    "zoom": 14
+  },
+  {
+    "name": "Kennedy Space Center",
+    "description": "NASA's primary launch site – rockets, space shuttles, and space nerd paradise",
+    "lat": 28.572,
+    "lon": -80.649,
+    "zoom": 13
+  },
+  {
+    "name": "Royal Observatory Greenwich",
+    "description": "Historic observatory at the Prime Meridian (0° longitude)",
+    "lat": 51.477,
+    "lon": -0.001,
+    "zoom": 16
+  },
+  {
+    "name": "Arecibo Observatory",
+    "description": "Famous giant radio telescope in Puerto Rico (legendary in astronomy)",
+    "lat": 18.344,
+    "lon": -66.753,
+    "zoom": 16
+  }
+]
