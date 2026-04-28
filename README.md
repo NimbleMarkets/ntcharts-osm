@@ -76,6 +76,16 @@ task build-ex-mapview
 
 Targets Bubble Tea **v2** (`charm.land/bubbletea/v2`). No v1 backport.
 
+## Heads-up: pixterm replace
+
+Glyph rendering goes through `ntcharts/v2/picture` → `eliukblau/pixterm/pkg/ansimage`. The upstream `RenderExt` has an off-by-one that drops the first cell row, so the rendered map ends up one row shorter than the surrounding box. Until the fix is merged upstream, this module's `go.mod` carries the same replace ntcharts uses — pointing at the NimbleMarkets fork:
+
+```go.mod
+replace github.com/eliukblau/pixterm => github.com/NimbleMarkets/pixterm v0.0.0-20260428212147-d576e057b538
+```
+
+Go's module system **does not propagate replace directives transitively**, so any consumer of this module needs to add the same replace in its own `go.mod`. Once the upstream pixterm release includes the fix, both replaces can come out.
+
 ## Known caveats
 
 - **Tile fetching is synchronous per render.** Each render builds its own `*sm.Context` inside the dispatched goroutine and tags the result with a generation counter, so rapid pan / zoom / resize fires safely-parallel renders and stale results are dropped. Composited images are kept in a small per-Model LRU keyed on `(lat, lng, zoom, cols, rows, style, oversample, markers)` — revisiting a state hits the cache synchronously (no goroutine, no Loading overlay). Default cap is 16 entries; tune via `mapview.NewWithConfig(Config{CacheCap: N})` (`-1` disables caching).

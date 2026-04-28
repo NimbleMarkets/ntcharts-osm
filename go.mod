@@ -40,3 +40,5 @@ require (
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 )
+
+replace github.com/eliukblau/pixterm => github.com/NimbleMarkets/pixterm v0.0.0-20260428212147-d576e057b538
