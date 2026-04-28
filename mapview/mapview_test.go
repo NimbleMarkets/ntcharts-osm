@@ -3,6 +3,7 @@ package mapview
 import (
 	"image"
 	"image/color"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -39,8 +40,11 @@ func TestNewInitializesDefaultState(t *testing.T) {
 	if m.tileProvider == nil {
 		t.Fatal("expected tile provider to be initialized")
 	}
-	if m.View().Content != "" {
-		t.Fatalf("expected empty initial view, got %q", m.View().Content)
+	// Until the first render completes, View shows a centered "Loading…"
+	// placeholder filling the cell rectangle so surrounding layout boxes
+	// keep their full breadth.
+	if got := m.View().Content; got == "" || !strings.Contains(got, "Loading") {
+		t.Fatalf("expected loading placeholder, got %q", got)
 	}
 }
 

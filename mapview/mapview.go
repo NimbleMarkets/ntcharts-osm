@@ -422,5 +422,13 @@ func (m Model) View() tea.View {
 	if m.errMsg != "" {
 		return tea.NewView(m.errMsg)
 	}
-	return m.pic.View()
+	pv := m.pic.View()
+	// Until the first tile render completes, picture.Model has no image and
+	// returns empty content — which would let the surrounding box collapse
+	// in the parent's layout. Fill the cell rectangle with a centered
+	// "Loading…" so the enclosure keeps its full breadth.
+	if pv.Content == "" && m.cols > 0 && m.rows > 0 {
+		return tea.NewView(lipgloss.Place(m.cols, m.rows, lipgloss.Center, lipgloss.Center, "Loading…"))
+	}
+	return pv
 }
