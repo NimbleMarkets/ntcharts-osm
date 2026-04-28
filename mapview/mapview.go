@@ -164,6 +164,17 @@ type Model struct {
 	// of 2 ≥ 1 after normalization in NewWithConfig).
 	oversample int
 
+	// opticalZoom magnifies the cached source image at display time.
+	// 0 = no zoom. N > 0 means crop center 1/2^N of each axis and let
+	// picture.Model scale it back up to the cell rectangle.
+	opticalZoom int
+
+	// sourceImage caches the most recent un-cropped image returned by a
+	// successful render or cache hit. SetOpticalZoom re-crops this on
+	// the fly so changing the zoom factor doesn't require a fresh
+	// network/tile fetch.
+	sourceImage image.Image
+
 	pic    picture.Model
 	errMsg string
 }
@@ -203,6 +214,23 @@ type Config struct {
 	// the tile cost without visible benefit (ansimage downscales to
 	// half-block resolution either way).
 	Oversample int
+
+	// OpticalZoom magnifies the cached source image without fetching
+	// new tiles — the renderer crops the center 1/N of each axis and
+	// hands that subimage to picture.Model, which scales it back up to
+	// the cell rectangle. The result is pixelated (digital zoom) but
+	// instant: switching OpticalZoom is purely a CPU operation on the
+	// already-rendered source.
+	//
+	//	0 (default) → no magnification
+	//	1          → 2× (center half each way, ¼ of the source area)
+	//	2          → 4× (center quarter each way, 1/16 of the area)
+	//	3          → 8× …
+	//
+	// Combine with Oversample for "optical zoom over a higher-resolution
+	// source": e.g. Oversample=2 + OpticalZoom=1 gives a 2× zoomed view
+	// that's still as sharp as the un-zoomed default.
+	OpticalZoom int
 }
 
 // New returns a Model sized to cols × rows terminal cells with default
@@ -213,13 +241,18 @@ func New(cols, rows int) Model {
 
 // NewWithConfig returns a Model with the supplied Config. Zero fields are
 // filled with defaults; negative CacheCap disables caching. Oversample is
-// floored to the nearest power of 2 ≥ 1.
+// floored to the nearest power of 2 ≥ 1; OpticalZoom is clamped to ≥ 0.
 func NewWithConfig(cfg Config) Model {
+	oz := cfg.OpticalZoom
+	if oz < 0 {
+		oz = 0
+	}
 	m := Model{
-		cols:       cfg.Cols,
-		rows:       cfg.Rows,
-		cacheCap:   cfg.CacheCap,
-		oversample: floorPow2(cfg.Oversample),
+		cols:        cfg.Cols,
+		rows:        cfg.Rows,
+		cacheCap:    cfg.CacheCap,
+		oversample:  floorPow2(cfg.Oversample),
+		opticalZoom: oz,
 	}
 	m.setInitialValues()
 	return m
@@ -280,6 +313,69 @@ func (m *Model) setInitialValues() {
 		m.oversample = 1
 	}
 	m.initialized = true
+}
+
+// OpticalZoom returns the current optical-zoom level. 0 means no
+// magnification; N > 0 means a 2^N center crop of the source image.
+func (m Model) OpticalZoom() int { return m.opticalZoom }
+
+// SetOpticalZoom adjusts the digital magnification of the cached source
+// image. n is clamped to >= 0. If a source image is already on hand, the
+// result is applied synchronously (no network or tile-render goroutine);
+// otherwise the next renderMapCmd will pick up the new value.
+func (m *Model) SetOpticalZoom(n int) tea.Cmd {
+	if n < 0 {
+		n = 0
+	}
+	if n == m.opticalZoom {
+		return nil
+	}
+	m.opticalZoom = n
+	if m.sourceImage == nil {
+		return m.renderMapCmd()
+	}
+	return m.pic.SetImage(cropCenter(m.sourceImage, opticalCropFactor(n)))
+}
+
+// opticalCropFactor returns the linear divisor for a given OpticalZoom
+// level. Level 0 → 1 (no crop), 1 → 2 (center half), 2 → 4 (center
+// quarter), etc.
+func opticalCropFactor(opticalZoom int) int {
+	if opticalZoom <= 0 {
+		return 1
+	}
+	return 1 << opticalZoom
+}
+
+// cropCenter returns the center 1/factor portion of img on each axis. If
+// factor <= 1 the original image is returned unchanged. Uses the
+// SubImage view when available (zero-copy); falls back to a copy
+// otherwise.
+func cropCenter(img image.Image, factor int) image.Image {
+	if img == nil || factor <= 1 {
+		return img
+	}
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	cw, ch := w/factor, h/factor
+	if cw < 1 || ch < 1 {
+		return img
+	}
+	x0 := b.Min.X + (w-cw)/2
+	y0 := b.Min.Y + (h-ch)/2
+	rect := image.Rect(x0, y0, x0+cw, y0+ch)
+	if sub, ok := img.(interface {
+		SubImage(image.Rectangle) image.Image
+	}); ok {
+		return sub.SubImage(rect)
+	}
+	out := image.NewRGBA(image.Rect(0, 0, cw, ch))
+	for y := 0; y < ch; y++ {
+		for x := 0; x < cw; x++ {
+			out.Set(x, y, img.At(rect.Min.X+x, rect.Min.Y+y))
+		}
+	}
+	return out
 }
 
 // effectiveOversample returns the (oversample factor, OSM zoom boost)
@@ -578,13 +674,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		*m.lastAccepted = msg.gen
 		if msg.err != nil {
 			m.errMsg = msg.err.Error()
+			m.sourceImage = nil
 			return m, m.pic.SetImage(nil)
 		}
 		m.errMsg = ""
+		// Cache and remember the un-cropped source so a later
+		// SetOpticalZoom can re-crop without going back to the network.
 		if m.cache != nil && msg.img != nil {
 			m.cache.put(msg.key, msg.img)
 		}
-		return m, m.pic.SetImage(msg.img)
+		m.sourceImage = msg.img
+		return m, m.pic.SetImage(cropCenter(msg.img, opticalCropFactor(m.opticalZoom)))
 
 	case MapCoordinates:
 		m.loc = ""
@@ -648,8 +748,10 @@ func (m *Model) renderMapCmd() tea.Cmd {
 		if cached, ok := m.cache.get(key); ok {
 			// Synchronous hit: SetImage now, no goroutine, no gen bump,
 			// no in-flight state — so View won't flash the Loading
-			// overlay.
-			return m.pic.SetImage(cached)
+			// overlay. Cache holds the un-cropped source so optical
+			// zoom can still be re-applied without a re-fetch.
+			m.sourceImage = cached
+			return m.pic.SetImage(cropCenter(cached, opticalCropFactor(m.opticalZoom)))
 		}
 	}
 

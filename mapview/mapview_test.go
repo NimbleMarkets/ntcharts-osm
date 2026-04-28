@@ -190,6 +190,82 @@ func TestOversample_CacheKeyDistinguishes(t *testing.T) {
 	}
 }
 
+// TestCropCenter verifies the digital-zoom crop math.
+func TestCropCenter(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 80, 60))
+
+	if got := cropCenter(src, 1); image.Image(src) != got {
+		t.Errorf("factor 1 should return the original (got a different image)")
+	}
+
+	c := cropCenter(src, 2).Bounds()
+	if c.Dx() != 40 || c.Dy() != 30 {
+		t.Errorf("factor 2: expected 40×30, got %d×%d", c.Dx(), c.Dy())
+	}
+	if c.Min.X != 20 || c.Min.Y != 15 {
+		t.Errorf("factor 2 should crop to center: expected origin (20,15), got (%d,%d)", c.Min.X, c.Min.Y)
+	}
+
+	c = cropCenter(src, 4).Bounds()
+	if c.Dx() != 20 || c.Dy() != 15 {
+		t.Errorf("factor 4: expected 20×15, got %d×%d", c.Dx(), c.Dy())
+	}
+
+	// Degenerate case: 4×4 image at factor 8 would crop to 0×0; should
+	// fall back to the original rather than return an empty image.
+	tiny := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	if got := cropCenter(tiny, 8); got.Bounds().Dx() == 0 {
+		t.Error("crop that would produce zero-width image should fall back to original")
+	}
+}
+
+// TestSetOpticalZoom_NoSourceQueuesRender verifies that SetOpticalZoom
+// before any tile render dispatches a fresh render Cmd.
+func TestSetOpticalZoom_NoSourceQueuesRender(t *testing.T) {
+	m := New(80, 24)
+	startGen := *m.renderGen
+	cmd := m.SetOpticalZoom(2)
+	if cmd == nil {
+		t.Fatal("expected a Cmd when no source image is cached")
+	}
+	if got := *m.renderGen; got != startGen+1 {
+		t.Fatalf("expected renderMapCmd to bump renderGen, was %d, got %d", startGen, got)
+	}
+	if m.opticalZoom != 2 {
+		t.Errorf("expected opticalZoom = 2, got %d", m.opticalZoom)
+	}
+}
+
+// TestSetOpticalZoom_WithSourceAppliesSync verifies that once a render
+// has produced a source image, changing the zoom doesn't dispatch a new
+// render — it just re-crops the cached source.
+func TestSetOpticalZoom_WithSourceAppliesSync(t *testing.T) {
+	m := New(80, 24)
+	src := newSolidImage(color.RGBA{R: 200, A: 255})
+	updated, _ := m.Update(mapImageMsg{gen: 0, img: src})
+	if updated.sourceImage == nil {
+		t.Fatal("expected source image to be remembered after a successful render")
+	}
+
+	startGen := *updated.renderGen
+	_ = updated.SetOpticalZoom(1) // 2× zoom
+	if got := *updated.renderGen; got != startGen {
+		t.Fatalf("expected SetOpticalZoom with cached source NOT to bump renderGen (was %d, got %d)", startGen, got)
+	}
+	if updated.opticalZoom != 1 {
+		t.Errorf("expected opticalZoom = 1, got %d", updated.opticalZoom)
+	}
+}
+
+// TestSetOpticalZoom_NoOpOnSameValue verifies that SetOpticalZoom with the
+// current value returns nil and doesn't churn picture.Model.
+func TestSetOpticalZoom_NoOpOnSameValue(t *testing.T) {
+	m := New(80, 24)
+	if cmd := m.SetOpticalZoom(0); cmd != nil {
+		t.Fatalf("expected nil Cmd for SetOpticalZoom(0) when current is 0, got %v", cmd)
+	}
+}
+
 // TestEffectiveOversample covers the maxOSMZoom cap math.
 func TestEffectiveOversample(t *testing.T) {
 	cases := []struct {

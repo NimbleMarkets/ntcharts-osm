@@ -7,7 +7,8 @@
 //
 // Keys:
 //   arrows               pan the map
-//   + / -                zoom in / out
+//   + / -                zoom in / out (refetches tiles)
+//   ] / [                optical zoom in / out (no fetch — crops the cached source)
 //   shift-up/down, j/k   change list selection (map jumps to it automatically)
 //   /                    filter the list
 //   g                    toggle Glyph ↔ Kitty rendering
@@ -92,20 +93,22 @@ func listKeyMap() list.KeyMap {
 // list keys are owned by the embedded models; this struct only exists so the
 // help bubble has a single KeyMap to render from.
 type appKeys struct {
-	pan     key.Binding
-	zoom    key.Binding
-	listNav key.Binding
-	filter  key.Binding
-	mode    key.Binding
-	style   key.Binding
-	help    key.Binding
-	quit    key.Binding
+	pan      key.Binding
+	zoom     key.Binding
+	optZoom  key.Binding
+	listNav  key.Binding
+	filter   key.Binding
+	mode     key.Binding
+	style    key.Binding
+	help     key.Binding
+	quit     key.Binding
 }
 
 func newAppKeys() appKeys {
 	return appKeys{
 		pan:     key.NewBinding(key.WithKeys("up", "down", "left", "right"), key.WithHelp("←↑↓→", "pan")),
 		zoom:    key.NewBinding(key.WithKeys("+", "-", "=", "_"), key.WithHelp("+/-", "zoom")),
+		optZoom: key.NewBinding(key.WithKeys("[", "]"), key.WithHelp("[/]", "optical")),
 		listNav: key.NewBinding(key.WithKeys("shift+up", "shift+down", "j", "k"), key.WithHelp("⇧↑↓/jk", "list")),
 		filter:  key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		mode:    key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "mode")),
@@ -116,12 +119,12 @@ func newAppKeys() appKeys {
 }
 
 func (k appKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.pan, k.zoom, k.listNav, k.filter, k.mode, k.style, k.help, k.quit}
+	return []key.Binding{k.pan, k.zoom, k.optZoom, k.listNav, k.filter, k.mode, k.style, k.help, k.quit}
 }
 
 func (k appKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.pan, k.zoom},
+		{k.pan, k.zoom, k.optZoom},
 		{k.listNav, k.filter},
 		{k.mode, k.style, k.help, k.quit},
 	}
@@ -236,6 +239,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				next = mapview.ArcgisWorldImagery
 			}
 			return m, m.mv.SetStyle(next)
+		case "]":
+			// Optical zoom in — re-crops the cached source, no network.
+			return m, m.mv.SetOpticalZoom(m.mv.OpticalZoom() + 1)
+		case "[":
+			next := m.mv.OpticalZoom() - 1
+			if next < 0 {
+				next = 0
+			}
+			return m, m.mv.SetOpticalZoom(next)
 		}
 
 		// Forward to both — their KeyMaps are disjoint (arrows vs j/k/shift).
@@ -343,8 +355,12 @@ func (m model) View() tea.View {
 		mode = "Kitty"
 	}
 	lat, lng := m.mv.Center()
-	status := fmt.Sprintf("%.4f,%.4f z%d  %s  %s",
-		lat, lng, m.mv.Zoom(), mode, styleName(m.mv.TileStyle()))
+	optical := ""
+	if oz := m.mv.OpticalZoom(); oz > 0 {
+		optical = fmt.Sprintf("  ×%d", 1<<oz)
+	}
+	status := fmt.Sprintf("%.4f,%.4f z%d%s  %s  %s",
+		lat, lng, m.mv.Zoom(), optical, mode, styleName(m.mv.TileStyle()))
 
 	footer := footerStyle.Width(m.width).Render(status)
 	helpView := m.help.View(m.keys)
