@@ -40,9 +40,6 @@ const (
 	CartoDark
 	StamenToner
 	StamenTerrain
-	ThunderforestLandscape
-	ThunderforestOutdoors
-	ThunderforestTransport
 	ArcgisWorldImagery
 )
 
@@ -261,12 +258,6 @@ func (m *Model) SetStyle(style Style) tea.Cmd {
 		m.tileProvider = sm.NewTileProviderStamenToner()
 	case StamenTerrain:
 		m.tileProvider = sm.NewTileProviderStamenTerrain()
-	case ThunderforestLandscape:
-		m.tileProvider = sm.NewTileProviderThunderforestLandscape(getThunderforestAPIKey())
-	case ThunderforestOutdoors:
-		m.tileProvider = sm.NewTileProviderThunderforestOutdoors(getThunderforestAPIKey())
-	case ThunderforestTransport:
-		m.tileProvider = sm.NewTileProviderThunderforestTransport(getThunderforestAPIKey())
 	case ArcgisWorldImagery:
 		m.tileProvider = sm.NewTileProviderArcgisWorldImagery()
 	}
@@ -274,8 +265,6 @@ func (m *Model) SetStyle(style Style) tea.Cmd {
 	m.applyToOSM()
 	return m.renderMapCmd()
 }
-
-func getThunderforestAPIKey() string { return "YOUR_THUNDERFOREST_API_KEY" }
 
 func (m Model) Init() tea.Cmd { return m.renderMapCmd() }
 
