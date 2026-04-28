@@ -159,7 +159,10 @@ func initialModel() model {
 	l.KeyMap = listKeyMap()
 
 	first := places[0]
-	mv := mapview.New(0, 0)
+	// Oversample: 2 gives a 2× pixel-density tile-canvas at +1 OSM zoom,
+	// which Kitty terminals downscale to a noticeably sharper image at no
+	// extra geographic coverage. Glyph mode is unaffected visually.
+	mv := mapview.NewWithConfig(mapview.Config{Oversample: 2})
 	mv.KeyMap = mapKeyMap()
 	mv.SetLatLng(first.Lat, first.Lon, first.Zoom)
 	mv.SetMarkers([]mapview.Marker{{Lat: first.Lat, Lng: first.Lon}})

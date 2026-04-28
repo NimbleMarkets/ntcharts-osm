@@ -150,7 +150,7 @@ func TestRenderMapCmdHitsCacheSynchronously(t *testing.T) {
 	// Pre-populate the cache with the entry that the current state would
 	// look up.
 	cachedImg := newSolidImage(color.RGBA{R: 1, G: 2, B: 3, A: 255})
-	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, m.picRows(), m.tileStyle, m.markers)
+	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, m.picRows(), m.tileStyle, m.oversample, m.markers)
 	m.cache.put(key, cachedImg)
 
 	startGen := *m.renderGen
@@ -164,6 +164,61 @@ func TestRenderMapCmdHitsCacheSynchronously(t *testing.T) {
 	}
 	if m.inFlight() {
 		t.Fatal("cache hit must not flip inFlight true")
+	}
+}
+
+// TestFloorPow2 pins the snap-to-power-of-2 behavior used to normalize
+// Config.Oversample.
+func TestFloorPow2(t *testing.T) {
+	cases := map[int]int{
+		-3: 1, -1: 1, 0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 7: 4, 8: 8, 15: 8, 16: 16,
+	}
+	for in, want := range cases {
+		if got := floorPow2(in); got != want {
+			t.Errorf("floorPow2(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// TestOversample_CacheKeyDistinguishes verifies that two requests with
+// different effective oversamples don't collide in the cache.
+func TestOversample_CacheKeyDistinguishes(t *testing.T) {
+	k1 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 1, nil)
+	k2 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 2, nil)
+	if k1 == k2 {
+		t.Fatal("oversample 1 and 2 must produce different cache keys")
+	}
+}
+
+// TestEffectiveOversample covers the maxOSMZoom cap math.
+func TestEffectiveOversample(t *testing.T) {
+	cases := []struct {
+		name             string
+		zoom, oversample int
+		wantFactor       int
+		wantBoost        int
+	}{
+		{"default", 10, 1, 1, 0},
+		{"2x within budget", 10, 2, 2, 1},
+		{"4x within budget", 10, 4, 4, 2},
+		{"4x at cap-2", 17, 4, 4, 2}, // 17+2 = 19 ≤ 19
+		{"4x at cap-1, halves to 2", 18, 4, 2, 1},
+		{"4x at cap, halves to 1", 19, 4, 1, 0},
+		{"2x at cap-1, fits", 18, 2, 2, 1},
+		{"2x at cap, halves to 1", 19, 2, 1, 0},
+		{"non-pow-2 floors first", 10, 5, 4, 2},
+		{"zero treated as 1", 10, 0, 1, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewWithConfig(Config{Cols: 80, Rows: 24, Oversample: tc.oversample})
+			m.zoom = tc.zoom
+			factor, boost := m.effectiveOversample()
+			if factor != tc.wantFactor || boost != tc.wantBoost {
+				t.Errorf("zoom=%d oversample=%d → got (factor=%d, boost=%d), want (%d, %d)",
+					tc.zoom, tc.oversample, factor, boost, tc.wantFactor, tc.wantBoost)
+			}
+		})
 	}
 }
 

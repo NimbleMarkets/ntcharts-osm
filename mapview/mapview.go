@@ -160,6 +160,10 @@ type Model struct {
 	cache    *renderCache
 	cacheCap int // 0 means default; <0 disables; >0 sets the LRU size
 
+	// oversample is the linear pixel-density multiplier (always a power
+	// of 2 ≥ 1 after normalization in NewWithConfig).
+	oversample int
+
 	pic    picture.Model
 	errMsg string
 }
@@ -175,13 +179,30 @@ type Config struct {
 	// CacheCap tunes the LRU of composited tile images. Cache hits apply
 	// the previous image synchronously, so revisiting a state doesn't
 	// flash the Loading overlay. Each entry is roughly
-	// (cols × osmPxPerCellW) × (rows × osmPxPerCellH) RGBA pixels — about
-	// 940 KB at 80×24.
+	// (cols × osmPxPerCellW × Oversample) × (rows × osmPxPerCellH × Oversample)
+	// RGBA pixels — about 940 KB at 80×24 with the default oversample.
 	//
 	// Zero means the default (defaultRenderCacheCap = 16). Negative
 	// disables caching entirely — every render goes through the goroutine
 	// path and every state change shows the Loading overlay.
 	CacheCap int
+
+	// Oversample is an optical-zoom factor for the source-image canvas.
+	// A value of N (1, 2, 4, …) multiplies the per-cell pixel resolution
+	// by N AND bumps the OSM tile zoom level by log2(N), keeping the
+	// geographic area unchanged while giving the Kitty terminal N×
+	// more pixels per cell to sample from. Rough trade-off:
+	//
+	//	1 (default) → 8×16 px/cell, no extra tiles, current behavior
+	//	2          → 16×32 px/cell, ~4× more tiles, noticeably sharper
+	//	4          → 32×64 px/cell, ~16× more tiles, hi-DPI quality
+	//
+	// Non-power-of-2 values are floored to the nearest power of 2.
+	// At max zoom (19) the boost is reduced so the effective tile zoom
+	// stays valid; the px scale is reduced to match. Glyph mode pays
+	// the tile cost without visible benefit (ansimage downscales to
+	// half-block resolution either way).
+	Oversample int
 }
 
 // New returns a Model sized to cols × rows terminal cells with default
@@ -191,11 +212,44 @@ func New(cols, rows int) Model {
 }
 
 // NewWithConfig returns a Model with the supplied Config. Zero fields are
-// filled with defaults; negative CacheCap disables caching.
+// filled with defaults; negative CacheCap disables caching. Oversample is
+// floored to the nearest power of 2 ≥ 1.
 func NewWithConfig(cfg Config) Model {
-	m := Model{cols: cfg.Cols, rows: cfg.Rows, cacheCap: cfg.CacheCap}
+	m := Model{
+		cols:       cfg.Cols,
+		rows:       cfg.Rows,
+		cacheCap:   cfg.CacheCap,
+		oversample: floorPow2(cfg.Oversample),
+	}
 	m.setInitialValues()
 	return m
+}
+
+// floorPow2 returns the largest power of 2 ≤ n, with a floor of 1. So
+// floorPow2(0) == floorPow2(1) == 1; floorPow2(3) == 2; floorPow2(7) == 4.
+func floorPow2(n int) int {
+	if n <= 1 {
+		return 1
+	}
+	p := 1
+	for p<<1 <= n {
+		p <<= 1
+	}
+	return p
+}
+
+// log2 returns ⌊log₂(n)⌋ for n ≥ 1. Caller must ensure n is a power of 2
+// for an exact result; otherwise it returns the floor.
+func log2(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	r := 0
+	for n > 1 {
+		n >>= 1
+		r++
+	}
+	return r
 }
 
 func (m *Model) setInitialValues() {
@@ -222,7 +276,29 @@ func (m *Model) setInitialValues() {
 	if m.cache == nil && m.cacheCap > 0 {
 		m.cache = newRenderCache(m.cacheCap)
 	}
+	if m.oversample < 1 {
+		m.oversample = 1
+	}
 	m.initialized = true
+}
+
+// effectiveOversample returns the (oversample factor, OSM zoom boost)
+// actually used for the next render. Both are derived from m.oversample,
+// then capped so the resulting tile zoom (m.zoom + boost) doesn't exceed
+// maxOSMZoom. At the cap a request like "zoom 18, oversample 4" silently
+// degrades to "tile zoom 19, oversample 2" — same area, less sharp than
+// requested but never an invalid OSM request.
+func (m Model) effectiveOversample() (factor, boost int) {
+	factor = m.oversample
+	if factor < 1 {
+		factor = 1
+	}
+	boost = log2(factor)
+	for m.zoom+boost > maxOSMZoom && factor > 1 {
+		factor >>= 1
+		boost--
+	}
+	return factor, boost
 }
 
 // inFlight reports whether at least one render has been dispatched whose
@@ -244,10 +320,16 @@ func (m Model) Zoom() int { return m.zoom }
 // Pixels-per-terminal-cell used to size the underlying tile-render canvas.
 // The 1:2 ratio matches the half-block cell aspect, so ansimage's fit-mode
 // has no slack to leave behind and the map fills the entire enclosure.
-// Higher values = sharper Kitty-mode renders; lower = fewer tiles fetched.
+// Config.Oversample multiplies these for sharper Kitty renders without
+// changing the visible geographic area (see the optical-zoom note there).
 const (
 	osmPxPerCellW = 8
 	osmPxPerCellH = 16
+
+	// maxOSMZoom caps the OSM tile zoom we'll request, including any
+	// oversample boost. Most providers serve up to z=19; going higher
+	// returns 404s.
+	maxOSMZoom = 19
 )
 
 // AttributionText is the OSM credit pinned to the bottom row of the rendered
@@ -269,28 +351,32 @@ const defaultRenderCacheCap = 16
 // renderKey identifies a fully-rendered tile image. All fields participate
 // in the equality comparison, including the serialized marker list, so two
 // states that produce visually identical output share a cache entry.
+// oversample is the EFFECTIVE multiplier (after maxZoom capping), not the
+// requested one — two requests that produce the same output share a slot.
 type renderKey struct {
-	lat, lng float64
-	zoom     int
-	cols     int
-	rows     int
-	style    Style
-	markers  string
+	lat, lng   float64
+	zoom       int
+	cols       int
+	rows       int
+	style      Style
+	oversample int
+	markers    string
 }
 
-func makeRenderKey(lat, lng float64, zoom, cols, rows int, style Style, markers []Marker) renderKey {
+func makeRenderKey(lat, lng float64, zoom, cols, rows int, style Style, oversample int, markers []Marker) renderKey {
 	var sb strings.Builder
 	for _, mk := range markers {
 		fmt.Fprintf(&sb, "%g,%g,%g,%v;", mk.Lat, mk.Lng, mk.Size, mk.Color)
 	}
 	return renderKey{
-		lat:     lat,
-		lng:     lng,
-		zoom:    zoom,
-		cols:    cols,
-		rows:    rows,
-		style:   style,
-		markers: sb.String(),
+		lat:        lat,
+		lng:        lng,
+		zoom:       zoom,
+		cols:       cols,
+		rows:       rows,
+		style:      style,
+		oversample: oversample,
+		markers:    sb.String(),
 	}
 }
 
@@ -550,8 +636,13 @@ func (m *Model) renderMapCmd() tea.Cmd {
 		m.lastAccepted = &a
 	}
 
+	// Optical-zoom math: oversample N (a power of 2) means N× per-cell
+	// pixel density at zoom + log2(N), preserving geographic coverage.
+	// effectiveOversample handles the maxOSMZoom cap.
+	effectiveOversample, zoomBoost := m.effectiveOversample()
+
 	markers := append([]Marker(nil), m.markers...)
-	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, picRows, m.tileStyle, markers)
+	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, picRows, m.tileStyle, effectiveOversample, markers)
 
 	if m.cache != nil {
 		if cached, ok := m.cache.get(key); ok {
@@ -566,15 +657,16 @@ func (m *Model) renderMapCmd() tea.Cmd {
 	gen := *m.renderGen
 
 	provider := m.tileProvider
-	lat, lng, zoom := m.lat, m.lng, m.zoom
-	pxW := m.cols * osmPxPerCellW
-	pxH := picRows * osmPxPerCellH
+	lat, lng := m.lat, m.lng
+	tileZoom := m.zoom + zoomBoost
+	pxW := m.cols * osmPxPerCellW * effectiveOversample
+	pxH := picRows * osmPxPerCellH * effectiveOversample
 
 	return func() tea.Msg {
 		ctx := sm.NewContext()
 		ctx.SetTileProvider(provider)
 		ctx.SetCenter(s2.LatLngFromDegrees(lat, lng))
-		ctx.SetZoom(zoom)
+		ctx.SetZoom(tileZoom)
 		ctx.SetSize(pxW, pxH)
 		for _, mk := range markers {
 			col := mk.Color
