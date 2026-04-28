@@ -93,6 +93,78 @@ func TestUpdateMapImageMsgDropsStaleGen(t *testing.T) {
 	}
 }
 
+// TestInitBumpsSharedRenderGen pins the fix for the "places change → map
+// doesn't redraw" bug: Init() has a value receiver, but the renderGen counter
+// is heap-allocated so the bump survives the copy. Without the *uint64,
+// Init's Cmd would carry a gen the live Model never sees, and every result
+// would be filtered out as "stale".
+func TestInitBumpsSharedRenderGen(t *testing.T) {
+	m := New(80, 24)
+	if m.renderGen == nil || m.lastAccepted == nil {
+		t.Fatal("expected renderGen / lastAccepted to be heap-allocated")
+	}
+	if got := *m.renderGen; got != 0 {
+		t.Fatalf("expected initial renderGen 0, got %d", got)
+	}
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("Init() should return a render Cmd when the Model is sized")
+	}
+	if got := *m.renderGen; got != 1 {
+		t.Fatalf("expected renderGen to be bumped to 1 after Init, got %d", got)
+	}
+}
+
+// TestInFlightBookkeeping pins the gen / lastAccepted accounting that drives
+// the overlay branch in View: a freshly-accepted render leaves inFlight
+// false, dispatching another render flips it true, and accepting that new
+// render flips it back to false.
+func TestInFlightBookkeeping(t *testing.T) {
+	m := New(80, 24)
+
+	img := newSolidImage(color.RGBA{R: 100, G: 200, B: 50, A: 255})
+	updated, _ := m.Update(mapImageMsg{gen: 0, img: img})
+	if updated.inFlight() {
+		t.Fatal("inFlight should be false after the only render is accepted")
+	}
+
+	if cmd := updated.renderMapCmd(); cmd == nil {
+		t.Fatal("expected renderMapCmd to return a Cmd")
+	}
+	if !updated.inFlight() {
+		t.Fatal("expected inFlight to be true after dispatching a new render")
+	}
+
+	updated, _ = updated.Update(mapImageMsg{gen: *updated.renderGen, img: img})
+	if updated.inFlight() {
+		t.Fatal("inFlight should flip back to false once the latest render lands")
+	}
+}
+
+// TestOverlayCenteredBoxComposites unit-tests the overlay primitive that
+// View() uses to composite the Loading badge on top of the previous image.
+// Picture content can have fewer cells than picRows when the source image
+// is small (the actual osm.Render path matches the cell rectangle exactly,
+// but tests don't), so this exercises the function directly with predictable
+// inputs.
+func TestOverlayCenteredBoxComposites(t *testing.T) {
+	cols, rows := 40, 10
+	row := strings.Repeat("X", cols)
+	content := strings.Repeat(row+"\n", rows-1) + row
+
+	overlay := "+---+\n| L |\n+---+"
+
+	got := overlayCenteredBox(content, cols, rows, overlay)
+	if !strings.Contains(got, "L") {
+		t.Fatalf("expected overlay 'L' to appear in result, got %q", got)
+	}
+	if !strings.Contains(got, "X") {
+		t.Fatal("expected untouched content cells (X) to remain in result")
+	}
+	if lines := strings.Split(got, "\n"); len(lines) != rows {
+		t.Fatalf("expected %d output lines, got %d", rows, len(lines))
+	}
+}
+
 func TestUpdateMapImageMsgWithErrorSetsErrMsg(t *testing.T) {
 	m := New(80, 24)
 	updated, _ := m.Update(mapImageMsg{err: errExample{}})

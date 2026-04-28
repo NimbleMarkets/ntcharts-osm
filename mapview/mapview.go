@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/NimbleMarkets/ntcharts/v2/picture"
+	"github.com/charmbracelet/x/ansi"
 	sm "github.com/flopp/go-staticmaps"
 	"github.com/golang/geo/s2"
 )
@@ -135,7 +137,17 @@ type Model struct {
 	// Each in-flight goroutine carries a copy in its mapImageMsg; Update
 	// drops messages whose gen no longer matches, so an older render
 	// finishing late cannot clobber a newer one.
-	renderGen uint64
+	//
+	// lastAccepted records the gen of the most recently applied
+	// mapImageMsg. (renderGen != lastAccepted) means a render is in flight,
+	// which the View uses to overlay a "Loading…" badge on the previous
+	// image instead of letting the surrounding box collapse.
+	//
+	// Both are pointers so the counters survive Bubble Tea's value-receiver
+	// idiom: methods like Init() return Cmds via a copy of Model, but the
+	// shared *uint64 keeps every copy in sync with the live counter.
+	renderGen    *uint64
+	lastAccepted *uint64
 
 	pic    picture.Model
 	errMsg string
@@ -158,7 +170,25 @@ func (m *Model) setInitialValues() {
 	m.loc = ""
 	m.pic = picture.New()
 	m.pic.SetSize(m.cols, m.picRows())
+	if m.renderGen == nil {
+		var g uint64
+		m.renderGen = &g
+	}
+	if m.lastAccepted == nil {
+		var a uint64
+		m.lastAccepted = &a
+	}
 	m.initialized = true
+}
+
+// inFlight reports whether at least one render has been dispatched whose
+// result hasn't been applied yet — i.e. the displayed picture is older than
+// the latest geo state.
+func (m Model) inFlight() bool {
+	if m.renderGen == nil || m.lastAccepted == nil {
+		return false
+	}
+	return *m.renderGen != *m.lastAccepted
 }
 
 // Center returns the current map center.
@@ -329,9 +359,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// is allowed to update picture.Model. Without this guard, a slow
 		// goroutine finishing after a faster newer one would replace the
 		// fresh image with a stale one.
-		if msg.gen != m.renderGen {
+		if m.renderGen == nil || msg.gen != *m.renderGen {
 			return m, nil
 		}
+		*m.lastAccepted = msg.gen
 		if msg.err != nil {
 			m.errMsg = msg.err.Error()
 			return m, m.pic.SetImage(nil)
@@ -376,8 +407,16 @@ func (m *Model) renderMapCmd() tea.Cmd {
 		return nil
 	}
 
-	m.renderGen++
-	gen := m.renderGen
+	if m.renderGen == nil {
+		var g uint64
+		m.renderGen = &g
+	}
+	if m.lastAccepted == nil {
+		var a uint64
+		m.lastAccepted = &a
+	}
+	*m.renderGen++
+	gen := *m.renderGen
 
 	provider := m.tileProvider
 	lat, lng, zoom := m.lat, m.lng, m.zoom
@@ -458,13 +497,19 @@ func (m Model) View() tea.View {
 	picRows := m.picRows()
 	pv := m.pic.View()
 
-	// Until the first tile render completes, picture.Model has no image and
-	// returns empty content — which would let the surrounding box collapse
-	// in the parent's layout. Fill the cell rectangle with a centered
-	// "Loading…" so the enclosure keeps its full breadth.
+	// Body composition rules:
+	// - No image yet → fill the cell rectangle with a centered "Loading…"
+	//   so the enclosure keeps its full breadth (no collapse).
+	// - Image present and a fresher render is in flight → composite a
+	//   small "Loading…" badge over the previous image so the user sees
+	//   the old map remain while the new one is fetching.
+	// - Otherwise → just the picture content.
 	body := pv.Content
-	if body == "" {
+	switch {
+	case body == "":
 		body = lipgloss.Place(m.cols, picRows, lipgloss.Center, lipgloss.Center, "Loading…")
+	case m.inFlight():
+		body = overlayCenteredBox(body, m.cols, picRows, loadingBadge())
 	}
 
 	// When the height is too small to spare a row, drop the attribution
@@ -480,6 +525,49 @@ func (m Model) View() tea.View {
 		Render(truncateForWidth(AttributionText, m.cols))
 
 	return tea.NewView(lipgloss.JoinVertical(lipgloss.Left, body, attribution))
+}
+
+// loadingBadge returns a small bordered "Loading…" box used as the
+// composited indicator when a fresher render is in flight.
+func loadingBadge() string {
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("11")).
+		Foreground(lipgloss.Color("11")).
+		Padding(0, 1).
+		Render("Loading…")
+}
+
+// overlayCenteredBox composites overlay onto the cols × rows cell rectangle
+// of content, centered. content is expected to be exactly cols cells wide
+// per row. If overlay doesn't fit, content is returned unchanged.
+func overlayCenteredBox(content string, cols, rows int, overlay string) string {
+	overlayLines := strings.Split(overlay, "\n")
+	overlayH := len(overlayLines)
+	overlayW := 0
+	for _, l := range overlayLines {
+		if w := lipgloss.Width(l); w > overlayW {
+			overlayW = w
+		}
+	}
+	if overlayW <= 0 || overlayH <= 0 || overlayW > cols || overlayH > rows {
+		return content
+	}
+
+	x := (cols - overlayW) / 2
+	y := (rows - overlayH) / 2
+
+	lines := strings.Split(content, "\n")
+	for i, ol := range overlayLines {
+		ly := y + i
+		if ly < 0 || ly >= len(lines) {
+			continue
+		}
+		left := ansi.Cut(lines[ly], 0, x)
+		right := ansi.Cut(lines[ly], x+overlayW, cols)
+		lines[ly] = left + ol + right
+	}
+	return strings.Join(lines, "\n")
 }
 
 // truncateForWidth shrinks s with an ellipsis so it fits in width terminal
