@@ -216,10 +216,15 @@ type Config struct {
 	Oversample int
 
 	// OpticalZoom magnifies the cached source image without fetching
-	// new tiles — the renderer crops the center 1/N of each axis and
-	// hands that subimage to picture.Model, which scales it back up to
-	// the cell rectangle. The result is pixelated (digital zoom) but
-	// instant: switching OpticalZoom is purely a CPU operation on the
+	// new tiles — the renderer crops the center 1/2^N of each axis and
+	// nearest-neighbor upscales it back to the source's original
+	// dimensions before handing it to picture.Model. The same-dim
+	// upscale matters: integer division of the crop rectangle would
+	// otherwise drift the aspect ratio away from the cell rectangle at
+	// high N, and ansimage's fit-mode would letterbox the result —
+	// visibly shrinking the rendered map box. Output is pixelated
+	// (digital zoom) but the cell rectangle stays the same shape.
+	// Switching OpticalZoom is purely a CPU operation on the
 	// already-rendered source.
 	//
 	//	0 (default) → no magnification
@@ -334,7 +339,7 @@ func (m *Model) SetOpticalZoom(n int) tea.Cmd {
 	if m.sourceImage == nil {
 		return m.renderMapCmd()
 	}
-	return m.pic.SetImage(cropCenter(m.sourceImage, opticalCropFactor(n)))
+	return m.pic.SetImage(opticalCrop(m.sourceImage, opticalCropFactor(n)))
 }
 
 // opticalCropFactor returns the linear divisor for a given OpticalZoom
@@ -347,11 +352,14 @@ func opticalCropFactor(opticalZoom int) int {
 	return 1 << opticalZoom
 }
 
-// cropCenter returns the center 1/factor portion of img on each axis. If
-// factor <= 1 the original image is returned unchanged. Uses the
-// SubImage view when available (zero-copy); falls back to a copy
-// otherwise.
-func cropCenter(img image.Image, factor int) image.Image {
+// opticalCrop takes the center 1/factor portion of img on each axis, then
+// nearest-neighbor upscales it back to img's original dimensions. The
+// upscale is essential: integer-floor division of crop dims drifts the
+// aspect ratio away from the source, and picture.Model's fit-mode would
+// then letterbox the result — visibly shrinking the cell rectangle as
+// the optical zoom climbs. Returning a same-dimensions image keeps the
+// rendered shape stable across zoom factors.
+func opticalCrop(img image.Image, factor int) image.Image {
 	if img == nil || factor <= 1 {
 		return img
 	}
@@ -363,16 +371,14 @@ func cropCenter(img image.Image, factor int) image.Image {
 	}
 	x0 := b.Min.X + (w-cw)/2
 	y0 := b.Min.Y + (h-ch)/2
-	rect := image.Rect(x0, y0, x0+cw, y0+ch)
-	if sub, ok := img.(interface {
-		SubImage(image.Rectangle) image.Image
-	}); ok {
-		return sub.SubImage(rect)
-	}
-	out := image.NewRGBA(image.Rect(0, 0, cw, ch))
-	for y := 0; y < ch; y++ {
-		for x := 0; x < cw; x++ {
-			out.Set(x, y, img.At(rect.Min.X+x, rect.Min.Y+y))
+
+	// Nearest-neighbor upscale of the cropped rect back to (w × h).
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		sy := y0 + y*ch/h
+		for x := 0; x < w; x++ {
+			sx := x0 + x*cw/w
+			out.Set(x, y, img.At(sx, sy))
 		}
 	}
 	return out
@@ -684,7 +690,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.cache.put(msg.key, msg.img)
 		}
 		m.sourceImage = msg.img
-		return m, m.pic.SetImage(cropCenter(msg.img, opticalCropFactor(m.opticalZoom)))
+		return m, m.pic.SetImage(opticalCrop(msg.img, opticalCropFactor(m.opticalZoom)))
 
 	case MapCoordinates:
 		m.loc = ""
@@ -751,7 +757,7 @@ func (m *Model) renderMapCmd() tea.Cmd {
 			// overlay. Cache holds the un-cropped source so optical
 			// zoom can still be re-applied without a re-fetch.
 			m.sourceImage = cached
-			return m.pic.SetImage(cropCenter(cached, opticalCropFactor(m.opticalZoom)))
+			return m.pic.SetImage(opticalCrop(cached, opticalCropFactor(m.opticalZoom)))
 		}
 	}
 

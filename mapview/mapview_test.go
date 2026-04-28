@@ -190,32 +190,67 @@ func TestOversample_CacheKeyDistinguishes(t *testing.T) {
 	}
 }
 
-// TestCropCenter verifies the digital-zoom crop math.
-func TestCropCenter(t *testing.T) {
+// TestOpticalCrop verifies that opticalCrop preserves source dimensions —
+// the cropped portion is upscaled back to the original size. This invariant
+// is critical: if it failed, ansimage's fit-mode would letterbox the
+// rendered cell rectangle as the zoom climbed, visibly shrinking the map
+// box. It also verifies that the crop pulls from the CENTER region (not a
+// corner) by using a quadrant-colored source where only the center cluster
+// can survive any reasonable crop+upscale.
+func TestOpticalCrop(t *testing.T) {
+	// 80×60 source, painted red except for an 8×8 green block at the
+	// center (36..44, 26..34). The block is large enough that
+	// nearest-neighbor sampling will hit several green pixels on
+	// upscale even with integer-math edge effects.
 	src := image.NewRGBA(image.Rect(0, 0, 80, 60))
-
-	if got := cropCenter(src, 1); image.Image(src) != got {
-		t.Errorf("factor 1 should return the original (got a different image)")
+	for y := 0; y < 60; y++ {
+		for x := 0; x < 80; x++ {
+			src.SetRGBA(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+	for y := 26; y < 34; y++ {
+		for x := 36; x < 44; x++ {
+			src.SetRGBA(x, y, color.RGBA{G: 255, A: 255})
+		}
 	}
 
-	c := cropCenter(src, 2).Bounds()
-	if c.Dx() != 40 || c.Dy() != 30 {
-		t.Errorf("factor 2: expected 40×30, got %d×%d", c.Dx(), c.Dy())
-	}
-	if c.Min.X != 20 || c.Min.Y != 15 {
-		t.Errorf("factor 2 should crop to center: expected origin (20,15), got (%d,%d)", c.Min.X, c.Min.Y)
+	// factor 1 → unchanged (returns the input pointer).
+	if got := opticalCrop(src, 1); image.Image(src) != got {
+		t.Errorf("factor 1 should return the original input")
 	}
 
-	c = cropCenter(src, 4).Bounds()
-	if c.Dx() != 20 || c.Dy() != 15 {
-		t.Errorf("factor 4: expected 20×15, got %d×%d", c.Dx(), c.Dy())
+	for _, factor := range []int{2, 4, 8} {
+		out := opticalCrop(src, factor)
+		b := out.Bounds()
+		if b.Dx() != 80 || b.Dy() != 60 {
+			t.Errorf("factor %d: expected output dims to match source 80×60, got %d×%d",
+				factor, b.Dx(), b.Dy())
+			continue
+		}
+		// Count green pixels in the output. With a center-anchored crop
+		// and the green block at the source center, every factor's
+		// upscale should hit a meaningful number of green output pixels;
+		// a buggy crop that pulled from a corner would land in the red
+		// region exclusively.
+		var green int
+		for y := 0; y < 60; y++ {
+			for x := 0; x < 80; x++ {
+				r, g, _, _ := out.At(x, y).RGBA()
+				if g > r {
+					green++
+				}
+			}
+		}
+		if green == 0 {
+			t.Errorf("factor %d: expected some green pixels in upscaled output (crop should hit center region)", factor)
+		}
 	}
 
-	// Degenerate case: 4×4 image at factor 8 would crop to 0×0; should
-	// fall back to the original rather than return an empty image.
+	// Degenerate: factor large enough that crop dims would be < 1.
+	// opticalCrop should fall back to the original input.
 	tiny := image.NewRGBA(image.Rect(0, 0, 4, 4))
-	if got := cropCenter(tiny, 8); got.Bounds().Dx() == 0 {
-		t.Error("crop that would produce zero-width image should fall back to original")
+	if got := opticalCrop(tiny, 8); got.Bounds().Dx() == 0 {
+		t.Error("factor that would produce zero-width crop should fall back to original")
 	}
 }
 
