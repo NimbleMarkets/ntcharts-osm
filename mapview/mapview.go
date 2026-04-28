@@ -166,14 +166,28 @@ func (m Model) Center() (lat, lng float64) { return m.lat, m.lng }
 // Zoom returns the current zoom level.
 func (m Model) Zoom() int { return m.zoom }
 
+// Pixels-per-terminal-cell used to size the underlying tile-render canvas.
+// The 1:2 ratio matches the half-block cell aspect, so ansimage's fit-mode
+// has no slack to leave behind and the map fills the entire enclosure.
+// Higher values = sharper Kitty-mode renders; lower = fewer tiles fetched.
+const (
+	osmPxPerCellW = 8
+	osmPxPerCellH = 16
+)
+
 // SetSize updates render dimensions in terminal cells. Returns a Cmd that
-// re-syncs picture.Model and re-renders the map.
+// re-syncs picture.Model and re-renders the map. The tile canvas is resized
+// to match the cell rectangle's aspect ratio so the rendered image flows the
+// entire enclosure rather than letterboxing.
 func (m *Model) SetSize(cols, rows int) tea.Cmd {
 	if cols == m.cols && rows == m.rows {
 		return nil
 	}
 	m.cols = cols
 	m.rows = rows
+	if m.osm != nil && cols > 0 && rows > 0 {
+		m.osm.SetSize(cols*osmPxPerCellW, rows*osmPxPerCellH)
+	}
 	picCmd := m.pic.SetSize(cols, rows)
 	return tea.Batch(picCmd, m.renderMapCmd())
 }
