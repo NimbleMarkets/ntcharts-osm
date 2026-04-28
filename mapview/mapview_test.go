@@ -140,6 +140,50 @@ func TestInFlightBookkeeping(t *testing.T) {
 	}
 }
 
+// TestRenderMapCmdHitsCacheSynchronously verifies that a renderKey already
+// present in the cache short-circuits renderMapCmd: no gen bump, no
+// goroutine, no in-flight state — so the consumer doesn't see a Loading
+// overlay flash when revisiting a known place.
+func TestRenderMapCmdHitsCacheSynchronously(t *testing.T) {
+	m := New(80, 24)
+
+	// Pre-populate the cache with the entry that the current state would
+	// look up.
+	cachedImg := newSolidImage(color.RGBA{R: 1, G: 2, B: 3, A: 255})
+	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, m.picRows(), m.tileStyle, m.markers)
+	m.cache.put(key, cachedImg)
+
+	startGen := *m.renderGen
+
+	// In glyph mode pic.SetImage returns nil (no Kitty frame to schedule),
+	// so we don't assert on the Cmd's nil-ness — only on the absence of
+	// the in-flight bookkeeping that would trigger the Loading overlay.
+	_ = m.renderMapCmd()
+	if got := *m.renderGen; got != startGen {
+		t.Fatalf("expected cache hit to NOT bump renderGen (was %d, got %d)", startGen, got)
+	}
+	if m.inFlight() {
+		t.Fatal("cache hit must not flip inFlight true")
+	}
+}
+
+// TestRenderMapCmdMissBumpsGen complements the above: when there is no
+// cache entry, renderMapCmd must dispatch a goroutine and bump the counter.
+func TestRenderMapCmdMissBumpsGen(t *testing.T) {
+	m := New(80, 24)
+	startGen := *m.renderGen
+
+	if cmd := m.renderMapCmd(); cmd == nil {
+		t.Fatal("expected non-nil Cmd on cache miss")
+	}
+	if got := *m.renderGen; got != startGen+1 {
+		t.Fatalf("expected renderGen to bump from %d to %d, got %d", startGen, startGen+1, got)
+	}
+	if !m.inFlight() {
+		t.Fatal("expected inFlight true after dispatching a fresh render")
+	}
+}
+
 // TestOverlayCenteredBoxComposites unit-tests the overlay primitive that
 // View() uses to composite the Loading badge on top of the previous image.
 // Picture content can have fewer cells than picRows when the source image

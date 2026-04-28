@@ -54,12 +54,15 @@ type MapCoordinates struct {
 }
 
 // mapImageMsg carries the image.Image produced by an async tile render.
-// Update hands the image to the embedded picture.Model. The gen field is a
-// monotonic counter set when the render Cmd is dispatched; messages whose
-// gen no longer matches the Model's renderGen are stale and dropped, so an
-// older render finishing late can't overwrite a newer one.
+// Update hands the image to the embedded picture.Model and, on success,
+// stores the image in the render cache keyed by the state that produced it.
+// The gen field is a monotonic counter set when the render Cmd is
+// dispatched; messages whose gen no longer matches the Model's renderGen
+// are stale and dropped, so an older render finishing late can't overwrite
+// a newer one.
 type mapImageMsg struct {
 	gen uint64
+	key renderKey
 	img image.Image
 	err error
 }
@@ -149,6 +152,13 @@ type Model struct {
 	renderGen    *uint64
 	lastAccepted *uint64
 
+	// cache is an LRU of (state → composited image) so revisiting a known
+	// state (e.g. selecting a place that was viewed earlier) applies the
+	// previous image synchronously, avoiding the in-flight Loading overlay.
+	// Pointer for the same value-receiver-survival reason as the gen
+	// counters above.
+	cache *renderCache
+
 	pic    picture.Model
 	errMsg string
 }
@@ -177,6 +187,9 @@ func (m *Model) setInitialValues() {
 	if m.lastAccepted == nil {
 		var a uint64
 		m.lastAccepted = &a
+	}
+	if m.cache == nil {
+		m.cache = newRenderCache(defaultRenderCacheCap)
 	}
 	m.initialized = true
 }
@@ -213,6 +226,89 @@ const AttributionText = "Maps and Data (c) openstreetmap.org and contributors"
 // attributionMinRows is the smallest cell-rectangle height that still leaves
 // at least one row for the actual map after reserving the attribution row.
 const attributionMinRows = 2
+
+// defaultRenderCacheCap is the number of composited tile-images cached
+// keyed on (lat, lng, zoom, cols, rows, style, markers). A cache hit lets
+// SetLatLng / SetStyle / etc. apply the prior image synchronously, skipping
+// the goroutine roundtrip and the in-flight Loading overlay. Each entry is
+// a (cols × osmPxPerCellW) × (rows × osmPxPerCellH) RGBA image — for an
+// 80×24 cell viewport that's ~940 KB.
+const defaultRenderCacheCap = 16
+
+// renderKey identifies a fully-rendered tile image. All fields participate
+// in the equality comparison, including the serialized marker list, so two
+// states that produce visually identical output share a cache entry.
+type renderKey struct {
+	lat, lng float64
+	zoom     int
+	cols     int
+	rows     int
+	style    Style
+	markers  string
+}
+
+func makeRenderKey(lat, lng float64, zoom, cols, rows int, style Style, markers []Marker) renderKey {
+	var sb strings.Builder
+	for _, mk := range markers {
+		fmt.Fprintf(&sb, "%g,%g,%g,%v;", mk.Lat, mk.Lng, mk.Size, mk.Color)
+	}
+	return renderKey{
+		lat:     lat,
+		lng:     lng,
+		zoom:    zoom,
+		cols:    cols,
+		rows:    rows,
+		style:   style,
+		markers: sb.String(),
+	}
+}
+
+// renderCache is a small LRU of composited tile images. Access is single-
+// goroutine (Update + the synchronous render-Cmd construction in
+// renderMapCmd both run on Bubble Tea's main goroutine), so it doesn't
+// need locking.
+type renderCache struct {
+	cap     int
+	entries map[renderKey]image.Image
+	order   []renderKey
+}
+
+func newRenderCache(cap int) *renderCache {
+	return &renderCache{cap: cap, entries: make(map[renderKey]image.Image)}
+}
+
+func (c *renderCache) get(k renderKey) (image.Image, bool) {
+	img, ok := c.entries[k]
+	if ok {
+		c.markUsed(k)
+	}
+	return img, ok
+}
+
+func (c *renderCache) put(k renderKey, img image.Image) {
+	if _, ok := c.entries[k]; ok {
+		c.markUsed(k)
+		c.entries[k] = img
+		return
+	}
+	c.entries[k] = img
+	c.order = append(c.order, k)
+	for len(c.order) > c.cap {
+		evict := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, evict)
+	}
+}
+
+func (c *renderCache) markUsed(k renderKey) {
+	for i, e := range c.order {
+		if e == k {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			c.order = append(c.order, k)
+			return
+		}
+	}
+}
 
 // picRows returns the rows available to the embedded picture.Model after
 // reserving space for the attribution strip.
@@ -368,6 +464,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, m.pic.SetImage(nil)
 		}
 		m.errMsg = ""
+		if m.cache != nil && msg.img != nil {
+			m.cache.put(msg.key, msg.img)
+		}
 		return m, m.pic.SetImage(msg.img)
 
 	case MapCoordinates:
@@ -392,12 +491,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// renderMapCmd snapshots the geo state into a closure and dispatches a
-// goroutine that builds a fresh *sm.Context to do the tile fetch + composite.
-// Each in-flight goroutine has its own context — sm.Context is not
-// goroutine-safe, so prior versions that shared a single Model-owned context
-// raced under rapid pan / zoom / resize. The returned mapImageMsg carries the
-// generation counter used by Update to drop stale results.
+// renderMapCmd produces a Cmd that delivers the composited tile image for
+// the Model's current geo state. On a cache hit the image is applied
+// synchronously via picture.SetImage, so no gen bump and no in-flight
+// state — the View won't show a Loading overlay and the map updates in
+// the same Bubble Tea iteration. On a cache miss it snapshots the state
+// into a closure and dispatches a goroutine that builds its own fresh
+// *sm.Context (sm.Context is not goroutine-safe) to do the tile fetch
+// and composite. The returned mapImageMsg carries the generation counter
+// used by Update to drop stale results, and the renderKey used to populate
+// the cache once the result is accepted.
 func (m *Model) renderMapCmd() tea.Cmd {
 	if m.cols <= 0 || m.tileProvider == nil {
 		return nil
@@ -415,6 +518,19 @@ func (m *Model) renderMapCmd() tea.Cmd {
 		var a uint64
 		m.lastAccepted = &a
 	}
+	if m.cache == nil {
+		m.cache = newRenderCache(defaultRenderCacheCap)
+	}
+
+	markers := append([]Marker(nil), m.markers...)
+	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, picRows, m.tileStyle, markers)
+
+	if cached, ok := m.cache.get(key); ok {
+		// Synchronous hit: SetImage now, no goroutine, no gen bump, no
+		// in-flight state — so View won't flash the Loading overlay.
+		return m.pic.SetImage(cached)
+	}
+
 	*m.renderGen++
 	gen := *m.renderGen
 
@@ -422,7 +538,6 @@ func (m *Model) renderMapCmd() tea.Cmd {
 	lat, lng, zoom := m.lat, m.lng, m.zoom
 	pxW := m.cols * osmPxPerCellW
 	pxH := picRows * osmPxPerCellH
-	markers := append([]Marker(nil), m.markers...)
 
 	return func() tea.Msg {
 		ctx := sm.NewContext()
@@ -442,7 +557,7 @@ func (m *Model) renderMapCmd() tea.Cmd {
 			ctx.AddObject(sm.NewMarker(s2.LatLngFromDegrees(mk.Lat, mk.Lng), col, size))
 		}
 		img, err := ctx.Render()
-		return mapImageMsg{gen: gen, img: img, err: err}
+		return mapImageMsg{gen: gen, key: key, img: img, err: err}
 	}
 }
 
