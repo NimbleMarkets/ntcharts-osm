@@ -156,16 +156,44 @@ type Model struct {
 	// state (e.g. selecting a place that was viewed earlier) applies the
 	// previous image synchronously, avoiding the in-flight Loading overlay.
 	// Pointer for the same value-receiver-survival reason as the gen
-	// counters above.
-	cache *renderCache
+	// counters above. nil when caching is disabled (Config.CacheCap < 0).
+	cache    *renderCache
+	cacheCap int // 0 means default; <0 disables; >0 sets the LRU size
 
 	pic    picture.Model
 	errMsg string
 }
 
-// New returns a Model sized to cols × rows terminal cells.
+// Config configures a Model at construction.
+type Config struct {
+	// Cols and Rows are the initial cell-rectangle dimensions. Equivalent
+	// to calling New(cols, rows). Leaving them zero is fine — most
+	// consumers learn the real size from the first tea.WindowSizeMsg and
+	// hand it to SetSize anyway.
+	Cols, Rows int
+
+	// CacheCap tunes the LRU of composited tile images. Cache hits apply
+	// the previous image synchronously, so revisiting a state doesn't
+	// flash the Loading overlay. Each entry is roughly
+	// (cols × osmPxPerCellW) × (rows × osmPxPerCellH) RGBA pixels — about
+	// 940 KB at 80×24.
+	//
+	// Zero means the default (defaultRenderCacheCap = 16). Negative
+	// disables caching entirely — every render goes through the goroutine
+	// path and every state change shows the Loading overlay.
+	CacheCap int
+}
+
+// New returns a Model sized to cols × rows terminal cells with default
+// configuration. Use NewWithConfig to tune cache capacity and other knobs.
 func New(cols, rows int) Model {
-	m := Model{cols: cols, rows: rows}
+	return NewWithConfig(Config{Cols: cols, Rows: rows})
+}
+
+// NewWithConfig returns a Model with the supplied Config. Zero fields are
+// filled with defaults; negative CacheCap disables caching.
+func NewWithConfig(cfg Config) Model {
+	m := Model{cols: cfg.Cols, rows: cfg.Rows, cacheCap: cfg.CacheCap}
 	m.setInitialValues()
 	return m
 }
@@ -188,8 +216,11 @@ func (m *Model) setInitialValues() {
 		var a uint64
 		m.lastAccepted = &a
 	}
-	if m.cache == nil {
-		m.cache = newRenderCache(defaultRenderCacheCap)
+	if m.cacheCap == 0 {
+		m.cacheCap = defaultRenderCacheCap
+	}
+	if m.cache == nil && m.cacheCap > 0 {
+		m.cache = newRenderCache(m.cacheCap)
 	}
 	m.initialized = true
 }
@@ -518,17 +549,17 @@ func (m *Model) renderMapCmd() tea.Cmd {
 		var a uint64
 		m.lastAccepted = &a
 	}
-	if m.cache == nil {
-		m.cache = newRenderCache(defaultRenderCacheCap)
-	}
 
 	markers := append([]Marker(nil), m.markers...)
 	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, picRows, m.tileStyle, markers)
 
-	if cached, ok := m.cache.get(key); ok {
-		// Synchronous hit: SetImage now, no goroutine, no gen bump, no
-		// in-flight state — so View won't flash the Loading overlay.
-		return m.pic.SetImage(cached)
+	if m.cache != nil {
+		if cached, ok := m.cache.get(key); ok {
+			// Synchronous hit: SetImage now, no goroutine, no gen bump,
+			// no in-flight state — so View won't flash the Loading
+			// overlay.
+			return m.pic.SetImage(cached)
+		}
 	}
 
 	*m.renderGen++

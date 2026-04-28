@@ -78,7 +78,7 @@ Targets Bubble Tea **v2** (`charm.land/bubbletea/v2`). No v1 backport.
 
 ## Known caveats
 
-- **Tile fetching is synchronous per render.** Each render builds its own `*sm.Context` inside the dispatched goroutine and tags the result with a generation counter, so rapid pan / zoom / resize fires safely-parallel renders and stale results are dropped. Composited images are kept in a small per-Model LRU keyed on `(lat, lng, zoom, cols, rows, style, markers)` — revisiting a state hits the cache synchronously (no goroutine, no Loading overlay). The cache holds the most recent ~16 entries; older state falls out via LRU.
+- **Tile fetching is synchronous per render.** Each render builds its own `*sm.Context` inside the dispatched goroutine and tags the result with a generation counter, so rapid pan / zoom / resize fires safely-parallel renders and stale results are dropped. Composited images are kept in a small per-Model LRU keyed on `(lat, lng, zoom, cols, rows, style, markers)` — revisiting a state hits the cache synchronously (no goroutine, no Loading overlay). Default cap is 16 entries; tune via `mapview.NewWithConfig(Config{CacheCap: N})` (`-1` disables caching).
 - **No built-in API key handling.** Tile providers that require a key (e.g. Thunderforest) are not bundled — add a custom `tileProvider` if you need one.
 - **Geocoding uses Nominatim** with no caching. Respect their [usage policy](https://operations.osmfoundation.org/policies/nominatim/) for production traffic.
 
