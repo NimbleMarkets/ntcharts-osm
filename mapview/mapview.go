@@ -175,20 +175,39 @@ const (
 	osmPxPerCellH = 16
 )
 
+// AttributionText is the OSM credit pinned to the bottom row of the rendered
+// map. OpenStreetMap's attribution policy requires it on every visible map.
+const AttributionText = "Maps and Data (c) openstreetmap.org and contributors"
+
+// attributionMinRows is the smallest cell-rectangle height that still leaves
+// at least one row for the actual map after reserving the attribution row.
+const attributionMinRows = 2
+
+// picRows returns the rows available to the embedded picture.Model after
+// reserving space for the attribution strip.
+func (m Model) picRows() int {
+	if m.rows >= attributionMinRows {
+		return m.rows - 1
+	}
+	return m.rows
+}
+
 // SetSize updates render dimensions in terminal cells. Returns a Cmd that
 // re-syncs picture.Model and re-renders the map. The tile canvas is resized
 // to match the cell rectangle's aspect ratio so the rendered image flows the
-// entire enclosure rather than letterboxing.
+// entire enclosure rather than letterboxing. One row is reserved at the
+// bottom for the OSM attribution strip.
 func (m *Model) SetSize(cols, rows int) tea.Cmd {
 	if cols == m.cols && rows == m.rows {
 		return nil
 	}
 	m.cols = cols
 	m.rows = rows
-	if m.osm != nil && cols > 0 && rows > 0 {
-		m.osm.SetSize(cols*osmPxPerCellW, rows*osmPxPerCellH)
+	picRows := m.picRows()
+	if m.osm != nil && cols > 0 && picRows > 0 {
+		m.osm.SetSize(cols*osmPxPerCellW, picRows*osmPxPerCellH)
 	}
-	picCmd := m.pic.SetSize(cols, rows)
+	picCmd := m.pic.SetSize(cols, picRows)
 	return tea.Batch(picCmd, m.renderMapCmd())
 }
 
@@ -422,13 +441,50 @@ func (m Model) View() tea.View {
 	if m.errMsg != "" {
 		return tea.NewView(m.errMsg)
 	}
+	if m.cols <= 0 || m.rows <= 0 {
+		return tea.NewView("")
+	}
+
+	picRows := m.picRows()
 	pv := m.pic.View()
+
 	// Until the first tile render completes, picture.Model has no image and
 	// returns empty content — which would let the surrounding box collapse
 	// in the parent's layout. Fill the cell rectangle with a centered
 	// "Loading…" so the enclosure keeps its full breadth.
-	if pv.Content == "" && m.cols > 0 && m.rows > 0 {
-		return tea.NewView(lipgloss.Place(m.cols, m.rows, lipgloss.Center, lipgloss.Center, "Loading…"))
+	body := pv.Content
+	if body == "" {
+		body = lipgloss.Place(m.cols, picRows, lipgloss.Center, lipgloss.Center, "Loading…")
 	}
-	return pv
+
+	// When the height is too small to spare a row, drop the attribution
+	// strip rather than starving the map further.
+	if picRows == m.rows {
+		return tea.NewView(body)
+	}
+
+	attribution := lipgloss.NewStyle().
+		Width(m.cols).
+		Align(lipgloss.Center).
+		Foreground(lipgloss.Color("242")).
+		Render(truncateForWidth(AttributionText, m.cols))
+
+	return tea.NewView(lipgloss.JoinVertical(lipgloss.Left, body, attribution))
+}
+
+// truncateForWidth shrinks s with an ellipsis so it fits in width terminal
+// cells. Returns "" if width is non-positive. Suitable for ASCII captions;
+// rune-aware enough for the © symbol.
+func truncateForWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	runes := []rune(s)
+	if width == 1 {
+		return string(runes[:1])
+	}
+	return string(runes[:width-1]) + "…"
 }

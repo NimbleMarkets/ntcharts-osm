@@ -33,8 +33,6 @@ const (
 	leftColMinInnerWidth = 30
 	leftColMaxInnerWidth = 60
 	leftColMaxFractionPct = 70
-
-	attribution = "Maps and Data (c) openstreetmap.org and contributors"
 )
 
 func styleName(s mapview.Style) string {
@@ -342,8 +340,8 @@ func (m model) View() tea.View {
 		mode = "Kitty"
 	}
 	lat, lng := m.mv.Center()
-	status := fmt.Sprintf("%.4f,%.4f z%d  %s  %s   %s",
-		lat, lng, m.mv.Zoom(), mode, styleName(m.mv.TileStyle()), attribution)
+	status := fmt.Sprintf("%.4f,%.4f z%d  %s  %s",
+		lat, lng, m.mv.Zoom(), mode, styleName(m.mv.TileStyle()))
 
 	footer := footerStyle.Width(m.width).Render(status)
 	helpView := m.help.View(m.keys)
