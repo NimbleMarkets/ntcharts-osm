@@ -78,8 +78,8 @@ Targets Bubble Tea **v2** (`charm.land/bubbletea/v2`). No v1 backport.
 
 ## Known caveats
 
-- **Tile fetching is synchronous.** `osm.Render()` runs in a goroutine that the widget dispatches via `tea.Cmd`, but `sm.Context` itself is not goroutine-safe — concurrent renders (e.g. a resize storm) race on the same context. For most TUIs this is fine; if you're driving thousands of renders/sec, snapshot the state into closures before dispatching.
-- **No built-in API key handling.** Tile providers that require a key (e.g. Thunderforest) are not bundled — add a `replace` and a custom `tileProvider` if you need one.
+- **Tile fetching is synchronous per render.** Each render builds its own `*sm.Context` inside the dispatched goroutine and tags the result with a generation counter, so rapid pan / zoom / resize fires safely-parallel renders and stale results are dropped. There's no shared tile cache, though, so each fresh render re-fetches whatever tiles upstream `flopp/go-staticmaps` doesn't already have cached on disk.
+- **No built-in API key handling.** Tile providers that require a key (e.g. Thunderforest) are not bundled — add a custom `tileProvider` if you need one.
 - **Geocoding uses Nominatim** with no caching. Respect their [usage policy](https://operations.osmfoundation.org/policies/nominatim/) for production traffic.
 
 ## License

@@ -34,9 +34,6 @@ func TestNewInitializesDefaultState(t *testing.T) {
 	if m.loc != "" {
 		t.Fatalf("expected empty location, got %q", m.loc)
 	}
-	if m.osm == nil {
-		t.Fatal("expected static map context to be initialized")
-	}
 	if m.tileProvider == nil {
 		t.Fatal("expected tile provider to be initialized")
 	}
@@ -69,12 +66,30 @@ func TestUpdateMapImageMsgFeedsPicture(t *testing.T) {
 
 	img := newSolidImage(color.RGBA{R: 100, G: 200, B: 50, A: 255})
 
+	// gen 0 matches the freshly-constructed Model's renderGen of 0 so the
+	// message is accepted without going through renderMapCmd first.
 	updated, _ := m.Update(mapImageMsg{img: img})
 	if updated.errMsg != "" {
 		t.Fatalf("expected no error message after successful image, got %q", updated.errMsg)
 	}
 	if updated.View().Content == "" {
 		t.Fatal("expected non-empty view content after image set")
+	}
+}
+
+func TestUpdateMapImageMsgDropsStaleGen(t *testing.T) {
+	m := New(80, 24)
+	// Advance renderGen so an incoming msg with the old gen is "stale".
+	if cmd := m.renderMapCmd(); cmd == nil {
+		t.Fatal("expected renderMapCmd to return a Cmd")
+	}
+	staleImg := newSolidImage(color.RGBA{R: 50, G: 50, B: 50, A: 255})
+	updated, cmd := m.Update(mapImageMsg{gen: 0, img: staleImg})
+	if cmd != nil {
+		t.Fatalf("expected stale msg to be ignored (no Cmd), got %v", cmd)
+	}
+	if updated.View().Content == "" || !strings.Contains(updated.View().Content, "Loading") {
+		t.Fatal("expected stale msg not to flip the view away from the Loading placeholder")
 	}
 }
 

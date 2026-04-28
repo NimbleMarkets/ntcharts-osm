@@ -51,9 +51,13 @@ type MapCoordinates struct {
 	Err error
 }
 
-// mapImageMsg carries the image.Image produced by an async osm.Render().
-// Update hands the image to the embedded picture.Model.
+// mapImageMsg carries the image.Image produced by an async tile render.
+// Update hands the image to the embedded picture.Model. The gen field is a
+// monotonic counter set when the render Cmd is dispatched; messages whose
+// gen no longer matches the Model's renderGen are stale and dropped, so an
+// older render finishing late can't overwrite a newer one.
 type mapImageMsg struct {
+	gen uint64
 	img image.Image
 	err error
 }
@@ -108,7 +112,9 @@ type Marker struct {
 
 // Model is a Bubble Tea model that renders a tile map. Rendering is delegated
 // to an embedded picture.Model; mapview owns geo state, key handling, and
-// async tile/geocode fetches.
+// async tile/geocode fetches. Each render builds its own *sm.Context inside
+// the goroutine — the Model holds no shared mutable tile context — so rapid
+// pan / zoom / resize can safely fire many renders in parallel.
 type Model struct {
 	KeyMap KeyMap
 	Style  lipgloss.Style
@@ -117,7 +123,6 @@ type Model struct {
 
 	initialized bool
 
-	osm          *sm.Context
 	tileProvider *sm.TileProvider
 	lat          float64
 	lng          float64
@@ -125,6 +130,12 @@ type Model struct {
 	zoom         int
 	markers      []Marker
 	tileStyle    Style
+
+	// renderGen is bumped every time renderMapCmd dispatches a goroutine.
+	// Each in-flight goroutine carries a copy in its mapImageMsg; Update
+	// drops messages whose gen no longer matches, so an older render
+	// finishing late cannot clobber a newer one.
+	renderGen uint64
 
 	pic    picture.Model
 	errMsg string
@@ -139,8 +150,6 @@ func New(cols, rows int) Model {
 
 func (m *Model) setInitialValues() {
 	m.KeyMap = DefaultKeyMap()
-	m.osm = sm.NewContext()
-	m.osm.SetSize(400, 400)
 	m.tileProvider = sm.NewTileProviderOpenStreetMaps()
 	m.tileStyle = OpenStreetMaps
 	m.zoom = 15
@@ -148,16 +157,8 @@ func (m *Model) setInitialValues() {
 	m.lng = -77.3383438
 	m.loc = ""
 	m.pic = picture.New()
-	m.pic.SetSize(m.cols, m.rows)
-	m.applyToOSM()
-	m.applyMarkersToOSM()
+	m.pic.SetSize(m.cols, m.picRows())
 	m.initialized = true
-}
-
-func (m *Model) applyToOSM() {
-	m.osm.SetTileProvider(m.tileProvider)
-	m.osm.SetCenter(s2.LatLngFromDegrees(m.lat, m.lng))
-	m.osm.SetZoom(m.zoom)
 }
 
 // Center returns the current map center.
@@ -193,67 +194,39 @@ func (m Model) picRows() int {
 }
 
 // SetSize updates render dimensions in terminal cells. Returns a Cmd that
-// re-syncs picture.Model and re-renders the map. The tile canvas is resized
-// to match the cell rectangle's aspect ratio so the rendered image flows the
-// entire enclosure rather than letterboxing. One row is reserved at the
-// bottom for the OSM attribution strip.
+// re-syncs picture.Model and re-renders the map. The tile canvas is sized
+// per-render inside renderMapCmd to match the cell-rectangle aspect ratio,
+// so the rendered image flows the entire enclosure rather than letterboxing.
+// One row is reserved at the bottom for the OSM attribution strip.
 func (m *Model) SetSize(cols, rows int) tea.Cmd {
 	if cols == m.cols && rows == m.rows {
 		return nil
 	}
 	m.cols = cols
 	m.rows = rows
-	picRows := m.picRows()
-	if m.osm != nil && cols > 0 && picRows > 0 {
-		m.osm.SetSize(cols*osmPxPerCellW, picRows*osmPxPerCellH)
-	}
-	picCmd := m.pic.SetSize(cols, picRows)
+	picCmd := m.pic.SetSize(cols, m.picRows())
 	return tea.Batch(picCmd, m.renderMapCmd())
 }
 
 // SetMarkers replaces all currently-drawn markers.
 func (m *Model) SetMarkers(markers []Marker) {
 	m.markers = markers
-	m.applyMarkersToOSM()
 }
 
 // ClearMarkers removes all markers from the map.
 func (m *Model) ClearMarkers() {
 	m.markers = nil
-	if m.osm != nil {
-		m.osm.ClearObjects()
-	}
-}
-
-func (m *Model) applyMarkersToOSM() {
-	if m.osm == nil {
-		return
-	}
-	m.osm.ClearObjects()
-	for _, mk := range m.markers {
-		col := mk.Color
-		if col == nil {
-			col = color.RGBA{0xff, 0x00, 0x00, 0xff}
-		}
-		size := mk.Size
-		if size == 0 {
-			size = 16
-		}
-		m.osm.AddObject(sm.NewMarker(s2.LatLngFromDegrees(mk.Lat, mk.Lng), col, size))
-	}
 }
 
 func (m *Model) SetLatLng(lat, lng float64, zoom int) {
 	m.lat = lat
 	m.lng = lng
 	m.zoom = zoom
-	m.applyToOSM()
 }
 
 func (m *Model) SetLocation(loc string, zoom int) {
 	m.loc = loc
 	m.zoom = zoom
-	m.applyToOSM()
 }
 
 // RenderMode returns the embedded picture.Model's mode.
@@ -295,7 +268,6 @@ func (m *Model) SetStyle(style Style) tea.Cmd {
 		m.tileProvider = sm.NewTileProviderArcgisWorldImagery()
 	}
 	m.tileStyle = style
-	m.applyToOSM()
 	return m.renderMapCmd()
 }
 
@@ -348,12 +320,18 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			hit = true
 		}
 		if hit {
-			m.applyToOSM()
 			return m, m.renderMapCmd()
 		}
 		return m, nil
 
 	case mapImageMsg:
+		// Drop stale renders: only the most-recently-dispatched generation
+		// is allowed to update picture.Model. Without this guard, a slow
+		// goroutine finishing after a faster newer one would replace the
+		// fresh image with a stale one.
+		if msg.gen != m.renderGen {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.errMsg = msg.err.Error()
 			return m, m.pic.SetImage(nil)
@@ -370,7 +348,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.errMsg = ""
 		m.lat = msg.Lat
 		m.lng = msg.Lng
-		m.applyToOSM()
 		return m, m.renderMapCmd()
 	}
 
@@ -384,16 +361,49 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// renderMapCmd dispatches the (synchronous) tile fetch + composite work to a
-// goroutine and returns a Cmd that produces a mapImageMsg.
+// renderMapCmd snapshots the geo state into a closure and dispatches a
+// goroutine that builds a fresh *sm.Context to do the tile fetch + composite.
+// Each in-flight goroutine has its own context — sm.Context is not
+// goroutine-safe, so prior versions that shared a single Model-owned context
+// raced under rapid pan / zoom / resize. The returned mapImageMsg carries the
+// generation counter used by Update to drop stale results.
 func (m *Model) renderMapCmd() tea.Cmd {
-	if m.cols <= 0 || m.rows <= 0 {
+	if m.cols <= 0 || m.tileProvider == nil {
 		return nil
 	}
-	osm := m.osm
+	picRows := m.picRows()
+	if picRows <= 0 {
+		return nil
+	}
+
+	m.renderGen++
+	gen := m.renderGen
+
+	provider := m.tileProvider
+	lat, lng, zoom := m.lat, m.lng, m.zoom
+	pxW := m.cols * osmPxPerCellW
+	pxH := picRows * osmPxPerCellH
+	markers := append([]Marker(nil), m.markers...)
+
 	return func() tea.Msg {
-		img, err := osm.Render()
-		return mapImageMsg{img: img, err: err}
+		ctx := sm.NewContext()
+		ctx.SetTileProvider(provider)
+		ctx.SetCenter(s2.LatLngFromDegrees(lat, lng))
+		ctx.SetZoom(zoom)
+		ctx.SetSize(pxW, pxH)
+		for _, mk := range markers {
+			col := mk.Color
+			if col == nil {
+				col = color.RGBA{0xff, 0x00, 0x00, 0xff}
+			}
+			size := mk.Size
+			if size == 0 {
+				size = 16
+			}
+			ctx.AddObject(sm.NewMarker(s2.LatLngFromDegrees(mk.Lat, mk.Lng), col, size))
+		}
+		img, err := ctx.Render()
+		return mapImageMsg{gen: gen, img: img, err: err}
 	}
 }
 
