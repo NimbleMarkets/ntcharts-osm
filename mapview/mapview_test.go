@@ -190,6 +190,163 @@ func TestOversample_CacheKeyDistinguishes(t *testing.T) {
 	}
 }
 
+// TestOpticalCrop_Geometry verifies the geometry invariants downstream
+// rendering depends on:
+//  1. Same bounds as the source.
+//  2. Output (0,0) reads the crop top-left, not a corner of the source —
+//     proves the crop region is centered, not anchored.
+//  3. Output center reads the source center (no centering drift). Uses
+//     a 64×64 source so (w-cw) and (h-ch) are both even at factor 4.
+func TestOpticalCrop_Geometry(t *testing.T) {
+	const w, h = 64, 64
+	const factor = 4 // cw=16, ch=16, x0=24, y0=24
+
+	src := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			src.SetRGBA(x, y, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		}
+	}
+	src.SetRGBA(24, 24, color.RGBA{R: 1, A: 255})       // crop top-left
+	src.SetRGBA(w-1, 0, color.RGBA{G: 50, A: 255})      // OUTSIDE crop
+	src.SetRGBA(w/2, h/2, color.RGBA{B: 1, A: 255})     // source center
+
+	out := opticalCrop(src, factor)
+
+	// (1) Same dims.
+	if b := out.Bounds(); b.Dx() != w || b.Dy() != h {
+		t.Fatalf("expected output %d×%d, got %d×%d", w, h, b.Dx(), b.Dy())
+	}
+
+	// (2) Output (0,0) reads crop top-left (red marker).
+	r, g, b, _ := out.At(0, 0).RGBA()
+	if r>>8 != 1 || g>>8 != 0 || b>>8 != 0 {
+		t.Errorf("output (0,0) should sample crop top-left (R=1), got R=%d G=%d B=%d", r>>8, g>>8, b>>8)
+	}
+
+	// (3) Output center reads source center (blue marker). At this size
+	// and factor the crop is exactly centered, so no neighborhood
+	// tolerance is needed.
+	r, g, b, _ = out.At(w/2, h/2).RGBA()
+	if b>>8 != 1 || r>>8 != 0 || g>>8 != 0 {
+		t.Errorf("output (%d,%d) should sample source center (B=1), got R=%d G=%d B=%d",
+			w/2, h/2, r>>8, g>>8, b>>8)
+	}
+
+	// The corner OUTSIDE the crop region should never appear in the
+	// output. Walk the whole output and verify no pixel matches the
+	// "outside" marker.
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			_, g, _, _ := out.At(x, y).RGBA()
+			if g>>8 == 50 {
+				t.Errorf("output (%d,%d) sampled a pixel from outside the crop region", x, y)
+			}
+		}
+	}
+}
+
+// TestOpticalCrop_ParityFixForRealisticSize covers the bug that was
+// shifting the rendered map at high optical zoom on the typical mapview
+// source size. 640×368 at factor 16 would have ch = 23 with (h-ch) = 345
+// (odd), placing the crop half a source pixel off-center vertically. The
+// upscale by factor 16 amplified that to a full cell of drift in Kitty
+// mode. opticalCrop now snaps cw/ch down by 1 when needed so the margin
+// is always even.
+func TestOpticalCrop_ParityFixForRealisticSize(t *testing.T) {
+	const w, h = 640, 368 // typical: cols=80, picRows=23, osmPxPerCellW=8, osmPxPerCellH=16
+
+	src := image.NewRGBA(image.Rect(0, 0, w, h))
+	src.SetRGBA(w/2, h/2, color.RGBA{B: 1, A: 255}) // source center
+	// Paint everything else "anything not blue" by leaving zero RGBA.
+
+	for _, factor := range []int{2, 4, 8, 16, 32} {
+		out := opticalCrop(src, factor)
+		b := out.Bounds()
+		if b.Dx() != w || b.Dy() != h {
+			t.Errorf("factor %d: expected dims %d×%d, got %d×%d", factor, w, h, b.Dx(), b.Dy())
+			continue
+		}
+
+		// The source center is the crop center too. After nearest-
+		// neighbor upscale, output (w/2, h/2) ± a small neighborhood
+		// must contain a blue pixel — this fails if the crop is off-
+		// center by more than 1 source-pixel-worth (which gets
+		// amplified by factor on upscale).
+		foundBlue := false
+		for dy := -1; dy <= 1; dy++ {
+			for dx := -1; dx <= 1; dx++ {
+				_, _, b, _ := out.At(w/2+dx, h/2+dy).RGBA()
+				if b>>8 == 1 {
+					foundBlue = true
+				}
+			}
+		}
+		if !foundBlue {
+			t.Errorf("factor %d: output center neighborhood missed the source-center marker — crop is off-center", factor)
+		}
+	}
+}
+
+// TestSetOpticalZoom_KittyEndToEnd exercises the full Kitty render path
+// after an optical-zoom change to confirm the renderCmd emits a frame
+// with the cell-rectangle dimensions picture knows about and a non-empty
+// grid+APC. A buggy crop (e.g. one that shifted bounds or emitted
+// wrong-size output) would break this end-to-end.
+func TestSetOpticalZoom_KittyEndToEnd(t *testing.T) {
+	m := New(80, 24)
+
+	// Toggle into Kitty mode. SetRenderMode bumps renderGen via its
+	// renderMapCmd call, so subsequent mapImageMsgs need to use the
+	// current gen.
+	if cmd := m.SetRenderMode(RenderKitty); cmd == nil {
+		t.Fatal("expected non-nil Cmd from SetRenderMode(RenderKitty)")
+	}
+	if m.RenderMode() != RenderKitty {
+		t.Fatalf("expected RenderKitty, got %v", m.RenderMode())
+	}
+
+	// Seed a source image. Use the *current* renderGen so Update accepts
+	// the message instead of dropping it as stale.
+	src := newSolidImage(color.RGBA{R: 100, G: 200, B: 50, A: 255})
+	updated, _ := m.Update(mapImageMsg{gen: *m.renderGen, img: src})
+	if updated.sourceImage == nil {
+		t.Fatal("expected sourceImage to be cached after a successful Update")
+	}
+
+	// Optical zoom change: should re-crop the cached source synchronously
+	// and feed picture.Model directly — no renderMapCmd dispatch.
+	startGen := *updated.renderGen
+	cmd := updated.SetOpticalZoom(2)
+	if got := *updated.renderGen; got != startGen {
+		t.Fatalf("SetOpticalZoom with cached source must NOT bump renderGen, was %d → %d", startGen, got)
+	}
+	if cmd == nil {
+		t.Fatal("SetOpticalZoom should return a Cmd in Kitty mode (picture.SetImage emits a renderCmd)")
+	}
+
+	// Drain the Cmd to a KittyFrameMsg and verify it carries a populated
+	// grid + APC at the expected cell-rectangle dimensions.
+	msg := cmd()
+	frame, ok := msg.(picture.KittyFrameMsg)
+	if !ok {
+		t.Fatalf("expected picture.KittyFrameMsg, got %T", msg)
+	}
+	if frame.Grid == "" {
+		t.Error("expected non-empty kitty grid after optical-zoom Cmd")
+	}
+	if frame.APC == "" {
+		t.Error("expected non-empty kitty APC after optical-zoom Cmd")
+	}
+
+	// The grid should be sized for the cell rectangle picture knows about
+	// (cols × picRows). Counting newlines is a cheap height check.
+	picRows := updated.picRows()
+	if got := strings.Count(frame.Grid, "\n") + 1; got != picRows {
+		t.Errorf("expected kitty grid to be %d rows tall, got %d", picRows, got)
+	}
+}
+
 // TestOpticalCrop verifies that opticalCrop preserves source dimensions —
 // the cropped portion is upscaled back to the original size. This invariant
 // is critical: if it failed, ansimage's fit-mode would letterbox the

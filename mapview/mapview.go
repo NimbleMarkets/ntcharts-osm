@@ -353,12 +353,19 @@ func opticalCropFactor(opticalZoom int) int {
 }
 
 // opticalCrop takes the center 1/factor portion of img on each axis, then
-// nearest-neighbor upscales it back to img's original dimensions. The
-// upscale is essential: integer-floor division of crop dims drifts the
-// aspect ratio away from the source, and picture.Model's fit-mode would
-// then letterbox the result — visibly shrinking the cell rectangle as
-// the optical zoom climbs. Returning a same-dimensions image keeps the
-// rendered shape stable across zoom factors.
+// nearest-neighbor upscales it back to img's original dimensions. Two
+// invariants matter for the rendered map to look right:
+//
+//  1. Output dims == source dims. picture.Model's fit-mode would
+//     otherwise letterbox the result, visibly shrinking the cell
+//     rectangle as the zoom climbs.
+//  2. (w - cw) and (h - ch) are even. The crop is centered around
+//     (b.Min + (w-cw)/2, …); when that margin is odd the crop sits half
+//     a source pixel off-center. After upscaling by `factor`, that
+//     half-pixel becomes `factor/2` source pixels of shift — at
+//     factor=16 (OpticalZoom=4) on a 368-px-tall source, that's a full
+//     cell of vertical drift. Snapping cw and ch down by 1 when needed
+//     keeps the center exact at every zoom level.
 func opticalCrop(img image.Image, factor int) image.Image {
 	if img == nil || factor <= 1 {
 		return img
@@ -366,6 +373,10 @@ func opticalCrop(img image.Image, factor int) image.Image {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	cw, ch := w/factor, h/factor
+	// Ensure (w - cw) and (h - ch) are even so the crop is exactly
+	// centered on (w/2, h/2).
+	cw -= (w - cw) & 1
+	ch -= (h - ch) & 1
 	if cw < 1 || ch < 1 {
 		return img
 	}
