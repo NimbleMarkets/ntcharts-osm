@@ -288,6 +288,41 @@ func TestOpticalCrop_ParityFixForRealisticSize(t *testing.T) {
 	}
 }
 
+// TestPadLinesBottom pins the helper that backfills picture content when
+// it undershoots the cell rectangle's row count (e.g. when ansimage's
+// fit-mode saturates the wrong axis right after a resize). The body must
+// always come out exactly n lines tall so the surrounding box matches
+// its sibling columns.
+func TestPadLinesBottom(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		n    int
+		want int // expected line count
+	}{
+		{"already enough", "a\nb\nc", 3, 3},
+		{"more than enough", "a\nb\nc\nd", 3, 4},
+		{"short by one", "a\nb", 3, 3},
+		{"short by many", "a", 5, 5},
+		{"empty padded to n", "", 4, 4},
+		{"n=0 leaves untouched", "a\nb", 0, 2},
+		{"negative n leaves untouched", "a", -3, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := padLinesBottom(tc.in, tc.n)
+			gotLines := 0
+			if got != "" {
+				gotLines = 1 + strings.Count(got, "\n")
+			}
+			if gotLines != tc.want {
+				t.Errorf("padLinesBottom(%q, %d) → %d lines, want %d (got %q)",
+					tc.in, tc.n, gotLines, tc.want, got)
+			}
+		})
+	}
+}
+
 // TestSetOpticalZoom_KittyEndToEnd exercises the full Kitty render path
 // after an optical-zoom change to confirm the renderCmd emits a frame
 // with the cell-rectangle dimensions picture knows about and a non-empty

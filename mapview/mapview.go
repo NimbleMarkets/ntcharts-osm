@@ -869,6 +869,16 @@ func (m Model) View() tea.View {
 		body = overlayCenteredBox(body, m.cols, picRows, loadingBadge())
 	}
 
+	// picture's Glyph mode runs ansimage in ScaleModeFit. Right after a
+	// resize that changes the cell rectangle's aspect ratio, the OLD
+	// cached source image (still held by picture until the next
+	// mapImageMsg lands) has the wrong AR for the new target — fit-mode
+	// then saturates the smaller axis and emits fewer than picRows rows.
+	// Pad to picRows so the surrounding box's height stays in sync with
+	// its sibling columns. Once the new render lands, the body grows
+	// back to the natural picRows count and the pad is a no-op.
+	body = padLinesBottom(body, picRows)
+
 	// When the height is too small to spare a row, drop the attribution
 	// strip rather than starving the map further.
 	if picRows == m.rows {
@@ -925,6 +935,22 @@ func overlayCenteredBox(content string, cols, rows int, overlay string) string {
 		lines[ly] = left + ol + right
 	}
 	return strings.Join(lines, "\n")
+}
+
+// padLinesBottom appends blank lines to s until it has at least n lines.
+// Used to backfill the body when the underlying renderer returns fewer
+// rows than the cell rectangle expects (typically right after a resize
+// that changes the cell-rect aspect ratio while picture still holds an
+// image rendered for the previous AR).
+func padLinesBottom(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	have := 1 + strings.Count(s, "\n")
+	if have >= n {
+		return s
+	}
+	return s + strings.Repeat("\n", n-have)
 }
 
 // truncateForWidth shrinks s with an ellipsis so it fits in width terminal
