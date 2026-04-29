@@ -42,3 +42,5 @@ require (
 )
 
 replace github.com/eliukblau/pixterm => github.com/NimbleMarkets/pixterm v0.0.0-20260428212147-d576e057b538
+
+replace github.com/NimbleMarkets/ntcharts/v2 => /Users/evan/projects/ntcharts-picture

@@ -17,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/NimbleMarkets/ntcharts/v2/picture"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	sm "github.com/flopp/go-staticmaps"
 	"github.com/golang/geo/s2"
@@ -70,9 +71,15 @@ type mapImageMsg struct {
 // IsMapUpdate reports whether msg is a message mapview's Update needs to see.
 // Parents containing other focusable widgets must forward matching messages
 // regardless of focus, otherwise async render results are lost.
+//
+// uv.CellSizeEvent is included so picture.Model can auto-apply its reply
+// to RequestCellSize (sent from picture.Model.Init, which mapview's Init
+// batches in). Without this, gated consumers wouldn't forward the
+// terminal's cell-size response and Kitty placements would stay at the
+// default 8×16, letterboxing on non-1:2 terminals.
 func IsMapUpdate(msg tea.Msg) bool {
 	switch msg.(type) {
-	case MapCoordinates, mapImageMsg:
+	case MapCoordinates, mapImageMsg, uv.CellSizeEvent:
 		return true
 	}
 	return picture.IsPictureMsg(msg)
@@ -627,7 +634,12 @@ func (m *Model) SetStyle(style Style) tea.Cmd {
 	return m.renderMapCmd()
 }
 
-func (m Model) Init() tea.Cmd { return m.renderMapCmd() }
+// Init dispatches the first tile render plus picture.Model.Init's terminal
+// cell-size query (RequestCellSize / CSI 16 t). The reply lands as
+// uv.CellSizeEvent in Update, picture auto-applies it via SetCellPixelSize,
+// and subsequent Kitty placements fill the cell rectangle on terminals
+// whose cell ratio isn't the assumed 1:2.
+func (m Model) Init() tea.Cmd { return tea.Batch(m.pic.Init(), m.renderMapCmd()) }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if !m.initialized {
