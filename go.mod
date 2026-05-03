@@ -13,6 +13,7 @@ require (
 )
 
 require (
+	github.com/NimbleMarkets/pixterm v0.0.0-20260429102514-4e8bc7f0c8ee // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260428153724-66037269d7be // indirect
@@ -22,7 +23,6 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
-	github.com/eliukblau/pixterm v1.3.2 // indirect
 	github.com/flopp/go-coordsparser v0.0.0-20250311184423-61a7ff62d17c // indirect
 	github.com/fogleman/gg v1.3.0 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect

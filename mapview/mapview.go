@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"io"
 	"math"
 	"net/http"
@@ -17,7 +18,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/NimbleMarkets/ntcharts/v2/picture"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	sm "github.com/flopp/go-staticmaps"
 	"github.com/golang/geo/s2"
@@ -72,14 +72,13 @@ type mapImageMsg struct {
 // Parents containing other focusable widgets must forward matching messages
 // regardless of focus, otherwise async render results are lost.
 //
-// uv.CellSizeEvent is included so picture.Model can auto-apply its reply
-// to RequestCellSize (sent from picture.Model.Init, which mapview's Init
-// batches in). Without this, gated consumers wouldn't forward the
-// terminal's cell-size response and Kitty placements would stay at the
-// default 8×16, letterboxing on non-1:2 terminals.
+// picture.IsPictureMsg covers KittyFrameMsg AND uv.CellSizeEvent (the
+// terminal's reply to picture.RequestCellSize, which mapview.Init dispatches
+// via m.pic.Init), so consumers gating forwarding on this helper still route
+// the cell-size reply through to picture's auto-apply.
 func IsMapUpdate(msg tea.Msg) bool {
 	switch msg.(type) {
-	case MapCoordinates, mapImageMsg, uv.CellSizeEvent:
+	case MapCoordinates, mapImageMsg:
 		return true
 	}
 	return picture.IsPictureMsg(msg)
@@ -171,6 +170,12 @@ type Model struct {
 	// of 2 ≥ 1 after normalization in NewWithConfig).
 	oversample int
 
+	// maxAspectRatio clamps the cell-rect AR the map content is allowed
+	// to span. 0 = unconstrained (no letterbox); >0 = letterbox at the
+	// boundary AR. letterboxColor fills the bands.
+	maxAspectRatio float64
+	letterboxColor color.Color
+
 	// opticalZoom magnifies the cached source image at display time.
 	// 0 = no zoom. N > 0 means crop center 1/2^N of each axis and let
 	// picture.Model scale it back up to the cell rectangle.
@@ -197,8 +202,8 @@ type Config struct {
 	// CacheCap tunes the LRU of composited tile images. Cache hits apply
 	// the previous image synchronously, so revisiting a state doesn't
 	// flash the Loading overlay. Each entry is roughly
-	// (cols × osmPxPerCellW × Oversample) × (rows × osmPxPerCellH × Oversample)
-	// RGBA pixels — about 940 KB at 80×24 with the default oversample.
+	// (cols × cellPixelW × Oversample) × (rows × cellPixelH × Oversample)
+	// RGBA pixels — about 940 KB at 80×24 with default 8×16 cell pixels.
 	//
 	// Zero means the default (defaultRenderCacheCap = 16). Negative
 	// disables caching entirely — every render goes through the goroutine
@@ -221,6 +226,28 @@ type Config struct {
 	// the tile cost without visible benefit (ansimage downscales to
 	// half-block resolution either way).
 	Oversample int
+
+	// MaxAspectRatio clamps how stretched (cell-rect AR) the rendered map
+	// portion is allowed to be. Cell-rect AR is allowed in
+	// [1/MaxAspectRatio, MaxAspectRatio]; outside that range the map
+	// content is rendered at the boundary AR and centered, with the rest
+	// of the cell rectangle filled by LetterboxColor.
+	//
+	//	0 (default) → no constraint (current behavior — map fills cell rect)
+	//	1.0         → strict square map regardless of cell-rect shape
+	//	2.0         → allow up to 2:1 in either direction
+	//	4.0         → permissive cap; only extreme AR triggers letterbox
+	//
+	// Both render modes letterbox identically: mapview composes the
+	// letterbox bands into the source image *before* picture renders, so
+	// Glyph and Kitty toggle to the same shape.
+	MaxAspectRatio float64
+
+	// LetterboxColor fills the cell-rectangle area outside the map
+	// portion when MaxAspectRatio causes letterboxing. nil falls back to
+	// opaque black; pass color.Transparent for "show terminal background
+	// through the bars."
+	LetterboxColor color.Color
 
 	// OpticalZoom magnifies the cached source image without fetching
 	// new tiles — the renderer crops the center 1/2^N of each axis and
@@ -253,18 +280,30 @@ func New(cols, rows int) Model {
 
 // NewWithConfig returns a Model with the supplied Config. Zero fields are
 // filled with defaults; negative CacheCap disables caching. Oversample is
-// floored to the nearest power of 2 ≥ 1; OpticalZoom is clamped to ≥ 0.
+// floored to the nearest power of 2 ≥ 1; OpticalZoom is clamped to ≥ 0;
+// MaxAspectRatio is clamped to ≥ 0 (0 = no AR constraint); LetterboxColor
+// defaults to opaque black.
 func NewWithConfig(cfg Config) Model {
 	oz := cfg.OpticalZoom
 	if oz < 0 {
 		oz = 0
 	}
+	mar := cfg.MaxAspectRatio
+	if mar < 0 {
+		mar = 0
+	}
+	lbc := cfg.LetterboxColor
+	if lbc == nil {
+		lbc = color.RGBA{R: 0, G: 0, B: 0, A: 0xff}
+	}
 	m := Model{
-		cols:        cfg.Cols,
-		rows:        cfg.Rows,
-		cacheCap:    cfg.CacheCap,
-		oversample:  floorPow2(cfg.Oversample),
-		opticalZoom: oz,
+		cols:           cfg.Cols,
+		rows:           cfg.Rows,
+		cacheCap:       cfg.CacheCap,
+		oversample:     floorPow2(cfg.Oversample),
+		opticalZoom:    oz,
+		maxAspectRatio: mar,
+		letterboxColor: lbc,
 	}
 	m.setInitialValues()
 	return m
@@ -323,6 +362,9 @@ func (m *Model) setInitialValues() {
 	}
 	if m.oversample < 1 {
 		m.oversample = 1
+	}
+	if m.letterboxColor == nil {
+		m.letterboxColor = color.RGBA{R: 0, G: 0, B: 0, A: 0xff}
 	}
 	m.initialized = true
 }
@@ -402,6 +444,83 @@ func opticalCrop(img image.Image, factor int) image.Image {
 	return out
 }
 
+// targetMapDims returns the pixel dimensions for the actual map portion
+// inside a cellRectW × cellRectH cell rectangle, given a maxAspectRatio
+// cap (0 = no cap, map fills the cell rect). When the cell rect's AR
+// exceeds [1/maxAR, maxAR], the map portion is shrunk to the boundary
+// AR; the surrounding area is intended for letterbox fill.
+func targetMapDims(cellRectW, cellRectH int, maxAR float64) (mapW, mapH int) {
+	if maxAR <= 0 || cellRectW <= 0 || cellRectH <= 0 {
+		return cellRectW, cellRectH
+	}
+	cellRectAR := float64(cellRectW) / float64(cellRectH)
+	switch {
+	case cellRectAR > maxAR:
+		// Cell rect is wider than allowed → constrain map width.
+		mapH = cellRectH
+		mapW = int(float64(cellRectH)*maxAR + 0.5)
+		if mapW > cellRectW {
+			mapW = cellRectW
+		}
+	case cellRectAR < 1.0/maxAR:
+		// Cell rect is taller than allowed → constrain map height.
+		mapW = cellRectW
+		mapH = int(float64(cellRectW)*maxAR + 0.5)
+		if mapH > cellRectH {
+			mapH = cellRectH
+		}
+	default:
+		// Cell rect AR within allowed range → fill.
+		mapW, mapH = cellRectW, cellRectH
+	}
+	if mapW < 1 {
+		mapW = 1
+	}
+	if mapH < 1 {
+		mapH = 1
+	}
+	return mapW, mapH
+}
+
+// composeLetterbox returns a cellRectW × cellRectH RGBA image with mapImg
+// drawn at the center and the surrounding area filled with bg. If mapImg
+// already fills the cell rect (mapImg dims equal cell rect dims), it's
+// returned unchanged so we don't allocate or copy unnecessarily.
+func composeLetterbox(mapImg image.Image, cellRectW, cellRectH int, bg color.Color) image.Image {
+	if mapImg == nil || cellRectW <= 0 || cellRectH <= 0 {
+		return mapImg
+	}
+	b := mapImg.Bounds()
+	if b.Dx() == cellRectW && b.Dy() == cellRectH {
+		return mapImg
+	}
+	canvas := image.NewRGBA(image.Rect(0, 0, cellRectW, cellRectH))
+	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{C: bg}, image.Point{}, draw.Src)
+	offX := (cellRectW - b.Dx()) / 2
+	offY := (cellRectH - b.Dy()) / 2
+	dst := image.Rect(offX, offY, offX+b.Dx(), offY+b.Dy())
+	draw.Draw(canvas, dst, mapImg, b.Min, draw.Src)
+	return canvas
+}
+
+// rgba8 packs a color.Color into a comparable 4-tuple for use in
+// renderKey. Color comparisons use 8-bit-per-channel quantization, which
+// is plenty for picking out background-color differences.
+type rgba8 struct{ R, G, B, A uint8 }
+
+func toRGBA8(c color.Color) rgba8 {
+	if c == nil {
+		return rgba8{}
+	}
+	r, g, b, a := c.RGBA()
+	return rgba8{
+		R: uint8(r >> 8),
+		G: uint8(g >> 8),
+		B: uint8(b >> 8),
+		A: uint8(a >> 8),
+	}
+}
+
 // effectiveOversample returns the (oversample factor, OSM zoom boost)
 // actually used for the next render. Both are derived from m.oversample,
 // then capped so the resulting tile zoom (m.zoom + boost) doesn't exceed
@@ -437,19 +556,24 @@ func (m Model) Center() (lat, lng float64) { return m.lat, m.lng }
 // Zoom returns the current zoom level.
 func (m Model) Zoom() int { return m.zoom }
 
-// Pixels-per-terminal-cell used to size the underlying tile-render canvas.
-// The 1:2 ratio matches the half-block cell aspect, so ansimage's fit-mode
-// has no slack to leave behind and the map fills the entire enclosure.
-// Config.Oversample multiplies these for sharper Kitty renders without
-// changing the visible geographic area (see the optical-zoom note there).
+// maxOSMZoom caps the OSM tile zoom we'll request, including any oversample
+// boost. Most providers serve up to z=19; going higher returns 404s.
+const maxOSMZoom = 19
+
+// Source-image pixel size per terminal cell. The 1:2 ratio matches ansimage's
+// half-block convention: each cell renders as one half-block character that
+// represents two source-pixel rows. Keeping the source at this AR makes
+// Glyph mode's fit-mode a no-op — the rendered output exactly fills the
+// cell rectangle.
+//
+// In Kitty mode, picture pre-scales the source to (cols*cellPixelW ×
+// rows*cellPixelH) — when the terminal's actual cell aspect isn't 1:2 the
+// pre-scale becomes a slight non-uniform stretch (CatmullRom handles it
+// smoothly, typically ~10% on common monospace fonts). Both modes fill the
+// cell rectangle; only the per-cell content density differs.
 const (
 	osmPxPerCellW = 8
 	osmPxPerCellH = 16
-
-	// maxOSMZoom caps the OSM tile zoom we'll request, including any
-	// oversample boost. Most providers serve up to z=19; going higher
-	// returns 404s.
-	maxOSMZoom = 19
 )
 
 // AttributionText is the OSM credit pinned to the bottom row of the rendered
@@ -464,39 +588,47 @@ const attributionMinRows = 2
 // keyed on (lat, lng, zoom, cols, rows, style, markers). A cache hit lets
 // SetLatLng / SetStyle / etc. apply the prior image synchronously, skipping
 // the goroutine roundtrip and the in-flight Loading overlay. Each entry is
-// a (cols × osmPxPerCellW) × (rows × osmPxPerCellH) RGBA image — for an
+// a (cols × cellPixelW) × (rows × cellPixelH) RGBA image — for an
 // 80×24 cell viewport that's ~940 KB.
 const defaultRenderCacheCap = 16
 
 // renderKey identifies a fully-rendered tile image. All fields participate
 // in the equality comparison, including the serialized marker list, so two
 // states that produce visually identical output share a cache entry.
-// oversample is the EFFECTIVE multiplier (after maxZoom capping), not the
-// requested one — two requests that produce the same output share a slot.
+// oversample is the EFFECTIVE multiplier (after maxZoom capping).
+// maxAspectRatio + ltrColor disambiguate cache entries before/after
+// letterbox-config changes since the cached source includes any letterbox
+// bands. Cell pixel dims don't appear here because the source dim is fixed
+// at the 1:2 osmPxPerCellW/H ratio — picture's pre-scale (which does
+// depend on cellPixelW/H) operates on the cached source at render time, so
+// the cache stays valid across CellSizeMsg updates.
 type renderKey struct {
-	lat, lng   float64
-	zoom       int
-	cols       int
-	rows       int
-	style      Style
-	oversample int
-	markers    string
+	lat, lng       float64
+	zoom           int
+	cols, rows     int
+	style          Style
+	oversample     int
+	maxAspectRatio float64
+	ltrColor       rgba8
+	markers        string
 }
 
-func makeRenderKey(lat, lng float64, zoom, cols, rows int, style Style, oversample int, markers []Marker) renderKey {
+func makeRenderKey(lat, lng float64, zoom, cols, rows int, style Style, oversample int, maxAR float64, ltrColor color.Color, markers []Marker) renderKey {
 	var sb strings.Builder
 	for _, mk := range markers {
 		fmt.Fprintf(&sb, "%g,%g,%g,%v;", mk.Lat, mk.Lng, mk.Size, mk.Color)
 	}
 	return renderKey{
-		lat:        lat,
-		lng:        lng,
-		zoom:       zoom,
-		cols:       cols,
-		rows:       rows,
-		style:      style,
-		oversample: oversample,
-		markers:    sb.String(),
+		lat:            lat,
+		lng:            lng,
+		zoom:           zoom,
+		cols:           cols,
+		rows:           rows,
+		style:          style,
+		oversample:     oversample,
+		maxAspectRatio: maxAR,
+		ltrColor:       toRGBA8(ltrColor),
+		markers:        sb.String(),
 	}
 }
 
@@ -725,6 +857,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.lat = msg.Lat
 		m.lng = msg.Lng
 		return m, m.renderMapCmd()
+
 	}
 
 	// Unknown messages: forward to picture.Model so KittyFrameMsg gets handled.
@@ -771,7 +904,7 @@ func (m *Model) renderMapCmd() tea.Cmd {
 	effectiveOversample, zoomBoost := m.effectiveOversample()
 
 	markers := append([]Marker(nil), m.markers...)
-	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, picRows, m.tileStyle, effectiveOversample, markers)
+	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, picRows, m.tileStyle, effectiveOversample, m.maxAspectRatio, m.letterboxColor, markers)
 
 	if m.cache != nil {
 		if cached, ok := m.cache.get(key); ok {
@@ -790,15 +923,21 @@ func (m *Model) renderMapCmd() tea.Cmd {
 	provider := m.tileProvider
 	lat, lng := m.lat, m.lng
 	tileZoom := m.zoom + zoomBoost
-	pxW := m.cols * osmPxPerCellW * effectiveOversample
-	pxH := picRows * osmPxPerCellH * effectiveOversample
+	cellRectW := m.cols * osmPxPerCellW * effectiveOversample
+	cellRectH := picRows * osmPxPerCellH * effectiveOversample
+
+	// Compute the actual map portion's pixel dims under MaxAspectRatio
+	// clamping. When unconstrained, mapW/mapH equal the cell rect and
+	// composeLetterbox is a no-op below.
+	mapW, mapH := targetMapDims(cellRectW, cellRectH, m.maxAspectRatio)
+	letterboxColor := m.letterboxColor
 
 	return func() tea.Msg {
 		ctx := sm.NewContext()
 		ctx.SetTileProvider(provider)
 		ctx.SetCenter(s2.LatLngFromDegrees(lat, lng))
 		ctx.SetZoom(tileZoom)
-		ctx.SetSize(pxW, pxH)
+		ctx.SetSize(mapW, mapH)
 		for _, mk := range markers {
 			col := mk.Color
 			if col == nil {
@@ -810,8 +949,18 @@ func (m *Model) renderMapCmd() tea.Cmd {
 			}
 			ctx.AddObject(sm.NewMarker(s2.LatLngFromDegrees(mk.Lat, mk.Lng), col, size))
 		}
-		img, err := ctx.Render()
-		return mapImageMsg{gen: gen, key: key, img: img, err: err}
+		mapImg, err := ctx.Render()
+		if err != nil {
+			return mapImageMsg{gen: gen, key: key, img: nil, err: err}
+		}
+		// Compose into a cell-rect-sized canvas with letterbox bands when
+		// MaxAspectRatio shrunk the map portion. The composed image has
+		// the cell rect's pixel AR by construction, so picture's
+		// pre-scale (Kitty) and ansimage's fit (Glyph) are both no-ops —
+		// the two render modes show identical layout, including the
+		// letterbox bands baked into the source.
+		composed := composeLetterbox(mapImg, cellRectW, cellRectH, letterboxColor)
+		return mapImageMsg{gen: gen, key: key, img: composed, err: nil}
 	}
 }
 

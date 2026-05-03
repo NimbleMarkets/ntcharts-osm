@@ -150,7 +150,7 @@ func TestRenderMapCmdHitsCacheSynchronously(t *testing.T) {
 	// Pre-populate the cache with the entry that the current state would
 	// look up.
 	cachedImg := newSolidImage(color.RGBA{R: 1, G: 2, B: 3, A: 255})
-	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, m.picRows(), m.tileStyle, m.oversample, m.markers)
+	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, m.picRows(), m.tileStyle, m.oversample, m.maxAspectRatio, m.letterboxColor, m.markers)
 	m.cache.put(key, cachedImg)
 
 	startGen := *m.renderGen
@@ -183,8 +183,8 @@ func TestFloorPow2(t *testing.T) {
 // TestOversample_CacheKeyDistinguishes verifies that two requests with
 // different effective oversamples don't collide in the cache.
 func TestOversample_CacheKeyDistinguishes(t *testing.T) {
-	k1 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 1, nil)
-	k2 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 2, nil)
+	k1 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 1, 0, nil, nil)
+	k2 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 2, 0, nil, nil)
 	if k1 == k2 {
 		t.Fatal("oversample 1 and 2 must produce different cache keys")
 	}
@@ -285,6 +285,106 @@ func TestOpticalCrop_ParityFixForRealisticSize(t *testing.T) {
 		if !foundBlue {
 			t.Errorf("factor %d: output center neighborhood missed the source-center marker — crop is off-center", factor)
 		}
+	}
+}
+
+// TestTargetMapDims pins the AR-clamping math used by MaxAspectRatio.
+// Cell rect AR is clamped into [1/maxAR, maxAR]; outside that range the
+// map portion is shrunk to the boundary AR.
+func TestTargetMapDims(t *testing.T) {
+	cases := []struct {
+		name                       string
+		cellRectW, cellRectH       int
+		maxAR                      float64
+		wantMapW, wantMapH         int
+	}{
+		{"unconstrained 0", 800, 400, 0, 800, 400},
+		{"unconstrained negative", 800, 400, -1, 800, 400},
+		{"in range, no letterbox", 800, 400, 3.0, 800, 400}, // AR=2.0, in [0.33, 3.0]
+		{"too wide, clamp at maxAR", 800, 100, 2.0, 200, 100}, // AR=8.0 > 2.0 → mapW=H*2
+		{"too tall, clamp at 1/maxAR", 100, 800, 2.0, 100, 200}, // AR=0.125 < 0.5 → mapH=W*2
+		{"square cap, wider rect", 800, 400, 1.0, 400, 400},     // AR=2.0 > 1.0 → square at H
+		{"square cap, taller rect", 400, 800, 1.0, 400, 400},    // AR=0.5 < 1.0 → square at W
+		{"degenerate width", 0, 400, 2.0, 0, 400},
+		{"degenerate height", 800, 0, 2.0, 800, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotW, gotH := targetMapDims(tc.cellRectW, tc.cellRectH, tc.maxAR)
+			if gotW != tc.wantMapW || gotH != tc.wantMapH {
+				t.Errorf("targetMapDims(%d, %d, %v) = (%d, %d); want (%d, %d)",
+					tc.cellRectW, tc.cellRectH, tc.maxAR,
+					gotW, gotH, tc.wantMapW, tc.wantMapH)
+			}
+		})
+	}
+}
+
+// TestComposeLetterbox verifies the letterbox composition produces a
+// cell-rect-sized canvas with the map at center and bg fill outside.
+func TestComposeLetterbox(t *testing.T) {
+	// Map is a solid green 200×100 image.
+	mapImg := image.NewRGBA(image.Rect(0, 0, 200, 100))
+	for y := 0; y < 100; y++ {
+		for x := 0; x < 200; x++ {
+			mapImg.SetRGBA(x, y, color.RGBA{G: 255, A: 255})
+		}
+	}
+	// Compose into 800×400 cell rect with red bg.
+	bg := color.RGBA{R: 255, A: 255}
+	out := composeLetterbox(mapImg, 800, 400, bg)
+	if got := out.Bounds(); got.Dx() != 800 || got.Dy() != 400 {
+		t.Fatalf("composed dims: expected 800×400, got %d×%d", got.Dx(), got.Dy())
+	}
+	// Map should be centered: offset (300, 150) → (500, 250).
+	r, g, _, _ := out.At(400, 200).RGBA() // map center
+	if g>>8 != 255 || r>>8 != 0 {
+		t.Errorf("expected map center pixel green, got R=%d G=%d", r>>8, g>>8)
+	}
+	r, g, _, _ = out.At(0, 0).RGBA() // top-left corner = letterbox bg
+	if r>>8 != 255 || g>>8 != 0 {
+		t.Errorf("expected (0,0) to be letterbox bg (red), got R=%d G=%d", r>>8, g>>8)
+	}
+	r, g, _, _ = out.At(799, 399).RGBA() // bottom-right corner = letterbox bg
+	if r>>8 != 255 || g>>8 != 0 {
+		t.Errorf("expected (799,399) to be letterbox bg (red), got R=%d G=%d", r>>8, g>>8)
+	}
+}
+
+// TestComposeLetterbox_NoOpWhenSizesMatch verifies no allocation happens
+// when the map already fills the cell rect (the common unconstrained
+// case where MaxAspectRatio=0 → mapImg.Bounds() == cell rect).
+func TestComposeLetterbox_NoOpWhenSizesMatch(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 800, 400))
+	out := composeLetterbox(src, 800, 400, color.RGBA{R: 255, A: 255})
+	if image.Image(src) != out {
+		t.Error("composeLetterbox should return the input unchanged when dims match")
+	}
+}
+
+// TestRenderKey_DistinguishesMaxAspectRatio verifies that two requests
+// for the same state but different MaxAspectRatio don't collide in the
+// cache (different maxAR yields different cached source — letterbox
+// bands are baked in).
+func TestRenderKey_DistinguishesMaxAspectRatio(t *testing.T) {
+	bg := color.RGBA{A: 255}
+	k1 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 1, 0, bg, nil)
+	k2 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 1, 2.0, bg, nil)
+	if k1 == k2 {
+		t.Fatal("MaxAspectRatio 0 and 2.0 must produce different cache keys")
+	}
+}
+
+// TestRenderKey_DistinguishesLetterboxColor verifies cache keying on
+// letterbox color too — different bg colors mean visually different
+// cached sources.
+func TestRenderKey_DistinguishesLetterboxColor(t *testing.T) {
+	black := color.RGBA{A: 255}
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	k1 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 1, 2.0, black, nil)
+	k2 := makeRenderKey(0, 0, 10, 80, 23, OpenStreetMaps, 1, 2.0, white, nil)
+	if k1 == k2 {
+		t.Fatal("different LetterboxColor must produce different cache keys")
 	}
 }
 
