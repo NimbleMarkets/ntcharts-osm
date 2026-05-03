@@ -908,10 +908,15 @@ func (m *Model) renderMapCmd() tea.Cmd {
 
 	if m.cache != nil {
 		if cached, ok := m.cache.get(key); ok {
-			// Synchronous hit: SetImage now, no goroutine, no gen bump,
-			// no in-flight state — so View won't flash the Loading
-			// overlay. Cache holds the un-cropped source so optical
-			// zoom can still be re-applied without a re-fetch.
+			// Synchronous hit: SetImage now, no goroutine. Bump gen so
+			// any older in-flight render's mapImageMsg is rejected as
+			// stale when it lands; sync lastAccepted so inFlight stays
+			// false and View doesn't flash a Loading badge over the
+			// just-applied cached image. Cache holds the un-cropped
+			// source so optical zoom can still be re-applied without
+			// a re-fetch.
+			*m.renderGen++
+			*m.lastAccepted = *m.renderGen
 			m.sourceImage = cached
 			return m.pic.SetImage(opticalCrop(cached, opticalCropFactor(m.opticalZoom)))
 		}
@@ -1016,14 +1021,21 @@ func (m Model) View() tea.View {
 	pv := m.pic.View()
 
 	// Body composition rules:
-	// - No image yet → fill the cell rectangle with a centered "Loading…"
-	//   so the enclosure keeps its full breadth (no collapse).
-	// - Image present and a fresher render is in flight → composite a
-	//   small "Loading…" badge over the previous image so the user sees
-	//   the old map remain while the new one is fetching.
+	// - Picture is empty AND we've never rendered → fill the cell rect
+	//   with a centered "Loading…" so the enclosure keeps full breadth.
+	// - Picture is empty BUT we have a sourceImage (transient: picture
+	//   invalidates on every SetSize/SetImage and waits for the next
+	//   KittyFrameMsg) → fill blank with just the small badge so the
+	//   layout stays steady. In Kitty mode the terminal still shows the
+	//   previous placement under our cells, so this avoids a full-screen
+	//   "Loading…" flash on every resize step.
+	// - Picture has content and a fresher render is in flight → overlay
+	//   the small badge on top of the previous image.
 	// - Otherwise → just the picture content.
 	body := pv.Content
 	switch {
+	case body == "" && m.sourceImage != nil:
+		body = overlayCenteredBox(blankCellRect(m.cols, picRows), m.cols, picRows, loadingBadge())
 	case body == "":
 		body = lipgloss.Place(m.cols, picRows, lipgloss.Center, lipgloss.Center, "Loading…")
 	case m.inFlight():
@@ -1053,6 +1065,13 @@ func (m Model) View() tea.View {
 		Render(truncateForWidth(AttributionText, m.cols))
 
 	return tea.NewView(lipgloss.JoinVertical(lipgloss.Left, body, attribution))
+}
+
+// blankCellRect returns a cols × rows string of spaces, used as the substrate
+// for the loading badge when picture is transiently empty (e.g., re-encoding
+// after SetSize / SetImage in Kitty mode).
+func blankCellRect(cols, rows int) string {
+	return lipgloss.Place(cols, rows, lipgloss.Center, lipgloss.Center, " ")
 }
 
 // loadingBadge returns a small bordered "Loading…" box used as the

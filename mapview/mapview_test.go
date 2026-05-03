@@ -140,10 +140,51 @@ func TestInFlightBookkeeping(t *testing.T) {
 	}
 }
 
+// TestCacheHitDuringStaleInFlight pins the fix for the resize/loading race:
+// when a goroutine is in flight at gen=N and the next renderMapCmd resolves
+// via the cache (e.g. user pans/resizes back to a recently-visited spot),
+// the cache-hit branch must invalidate the in-flight gen so its result
+// can't overwrite the just-applied cached image.
+func TestCacheHitDuringStaleInFlight(t *testing.T) {
+	m := New(80, 24)
+
+	// Dispatch a render so we have a stale gen "in flight".
+	if cmd := m.renderMapCmd(); cmd == nil {
+		t.Fatal("expected initial renderMapCmd to return a Cmd")
+	}
+	staleGen := *m.renderGen
+	if !m.inFlight() {
+		t.Fatal("expected inFlight true after first dispatch")
+	}
+
+	// Pre-populate the cache so the next renderMapCmd takes the synchronous hit.
+	cachedImg := newSolidImage(color.RGBA{R: 1, G: 2, B: 3, A: 255})
+	key := makeRenderKey(m.lat, m.lng, m.zoom, m.cols, m.picRows(), m.tileStyle, m.oversample, m.maxAspectRatio, m.letterboxColor, m.markers)
+	m.cache.put(key, cachedImg)
+
+	// Cache-hit transition.
+	_ = m.renderMapCmd()
+	if *m.renderGen == staleGen {
+		t.Fatal("expected cache hit to bump renderGen so stale in-flight result is invalidated")
+	}
+	if m.inFlight() {
+		t.Fatal("cache hit must leave inFlight false")
+	}
+
+	// Stale goroutine returns: must be dropped, leaving the cached source untouched.
+	staleImg := newSolidImage(color.RGBA{R: 250, G: 0, B: 0, A: 255})
+	updated, _ := m.Update(mapImageMsg{gen: staleGen, img: staleImg, key: key})
+	if updated.sourceImage != cachedImg {
+		t.Fatal("stale in-flight result must not overwrite the cache-hit sourceImage")
+	}
+}
+
 // TestRenderMapCmdHitsCacheSynchronously verifies that a renderKey already
-// present in the cache short-circuits renderMapCmd: no gen bump, no
-// goroutine, no in-flight state — so the consumer doesn't see a Loading
-// overlay flash when revisiting a known place.
+// present in the cache short-circuits renderMapCmd: SetImage is called
+// synchronously, no goroutine is dispatched, and inFlight stays false so
+// View doesn't flash the Loading overlay. renderGen is bumped (and
+// lastAccepted brought along with it) so any older in-flight render's
+// mapImageMsg is dropped as stale when it lands.
 func TestRenderMapCmdHitsCacheSynchronously(t *testing.T) {
 	m := New(80, 24)
 
@@ -156,11 +197,12 @@ func TestRenderMapCmdHitsCacheSynchronously(t *testing.T) {
 	startGen := *m.renderGen
 
 	// In glyph mode pic.SetImage returns nil (no Kitty frame to schedule),
-	// so we don't assert on the Cmd's nil-ness — only on the absence of
-	// the in-flight bookkeeping that would trigger the Loading overlay.
+	// so we don't assert on the Cmd's nil-ness — only on the gen bump and
+	// the absence of in-flight bookkeeping that would trigger the Loading
+	// overlay.
 	_ = m.renderMapCmd()
-	if got := *m.renderGen; got != startGen {
-		t.Fatalf("expected cache hit to NOT bump renderGen (was %d, got %d)", startGen, got)
+	if got := *m.renderGen; got != startGen+1 {
+		t.Fatalf("expected cache hit to bump renderGen by 1 (was %d, got %d)", startGen, got)
 	}
 	if m.inFlight() {
 		t.Fatal("cache hit must not flip inFlight true")
