@@ -8,6 +8,8 @@
 
 `ntcharts-osm` is a [Bubble Tea](https://github.com/charmbracelet/bubbletea) widget that renders OpenStreetMap tiles in the terminal. It pairs [`flopp/go-staticmaps`](https://github.com/flopp/go-staticmaps) for tile fetching with [`ntcharts/v2/picture`](https://github.com/NimbleMarkets/ntcharts) for image rendering — half-block glyphs anywhere, full-resolution Kitty graphics on terminals that support them (Kitty, Ghostty, WezTerm).
 
+<p align="center"><img src="examples/mapview/demo.gif" alt="quickstart gif" width="75%"/></p>
+
 ## Quickstart
 
 ```go
