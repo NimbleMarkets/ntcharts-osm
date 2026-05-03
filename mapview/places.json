@@ -5,41 +5,319 @@
     "lat": 46.234,
     "lon": 6.046,
     "zoom": 15,
-    "recommended": true
+    "category": "Particle Physics"
+  },
+  {
+    "name": "Fermilab",
+    "description": "Fermi National Accelerator Laboratory – Major US particle physics center",
+    "lat": 41.826,
+    "lon": -88.254,
+    "zoom": 14,
+    "category": "Particle Physics"
+  },
+  {
+    "name": "SLAC National Accelerator Laboratory",
+    "description": "Stanford Linear Accelerator Center – Linear accelerator and X-ray science",
+    "lat": 37.418,
+    "lon": -122.203,
+    "zoom": 15,
+    "category": "Particle Physics"
+  },
+  {
+    "name": "Brookhaven National Laboratory",
+    "description": "Home of the Relativistic Heavy Ion Collider (RHIC)",
+    "lat": 40.875,
+    "lon": -72.877,
+    "zoom": 14,
+    "category": "Particle Physics"
+  },
+  {
+    "name": "Los Alamos National Laboratory",
+    "description": "Historic Manhattan Project site and major nuclear research lab",
+    "lat": 35.876,
+    "lon": -106.324,
+    "zoom": 13,
+    "category": "Nuclear Physics"
   },
   {
     "name": "Mauna Kea Observatories",
-    "description": "World's premier astronomical observatory site on a dormant volcano in Hawaii",
-    "lat": 19.82,
+    "description": "World's premier astronomical observatory site on a volcano in Hawaii",
+    "lat": 19.83,
     "lon": -155.47,
-    "zoom": 13
+    "zoom": 13,
+    "category": "Astronomy"
   },
   {
     "name": "Very Large Array",
-    "description": "Iconic radio telescope array in New Mexico (featured in Contact and other films)",
+    "description": "Iconic radio telescope array in New Mexico",
     "lat": 34.079,
     "lon": -107.618,
-    "zoom": 14
+    "zoom": 14,
+    "category": "Radio Astronomy"
   },
   {
     "name": "Kennedy Space Center",
-    "description": "NASA's primary launch site – rockets, space shuttles, and space nerd paradise",
-    "lat": 28.572,
-    "lon": -80.649,
-    "zoom": 13
+    "description": "NASA's primary launch site for human spaceflight",
+    "lat": 28.573,
+    "lon": -80.651,
+    "zoom": 13,
+    "category": "Space"
   },
   {
     "name": "Royal Observatory Greenwich",
-    "description": "Historic observatory at the Prime Meridian (0° longitude)",
+    "description": "Historic site of the Prime Meridian and astronomy",
     "lat": 51.477,
     "lon": -0.001,
-    "zoom": 16
+    "zoom": 16,
+    "category": "Astronomy"
   },
   {
     "name": "Arecibo Observatory",
-    "description": "Famous giant radio telescope in Puerto Rico (legendary in astronomy)",
+    "description": "Legendary giant radio telescope in Puerto Rico (pre-collapse site)",
     "lat": 18.344,
     "lon": -66.753,
-    "zoom": 16
+    "zoom": 16,
+    "category": "Radio Astronomy"
+  },
+  {
+    "name": "LIGO Hanford",
+    "description": "Laser Interferometer Gravitational-Wave Observatory – Washington site",
+    "lat": 46.455,
+    "lon": -119.408,
+    "zoom": 13,
+    "category": "Gravitational Waves"
+  },
+  {
+    "name": "LIGO Livingston",
+    "description": "Laser Interferometer Gravitational-Wave Observatory – Louisiana site",
+    "lat": 30.563,
+    "lon": -90.774,
+    "zoom": 13,
+    "category": "Gravitational Waves"
+  },
+  {
+    "name": "IceCube Neutrino Observatory",
+    "description": "Neutrino detector at the South Pole",
+    "lat": -90.0,
+    "lon": 0.0,
+    "zoom": 3,
+    "category": "Neutrino Physics",
+    "note": "South Pole – approximate central location"
+  },
+  {
+    "name": "European Southern Observatory (Paranal)",
+    "description": "Very Large Telescope (VLT) in the Atacama Desert, Chile",
+    "lat": -24.627,
+    "lon": -70.405,
+    "zoom": 14,
+    "category": "Astronomy"
+  },
+  {
+    "name": "ALMA Observatory",
+    "description": "Atacama Large Millimeter/submillimeter Array, Chile",
+    "lat": -23.029,
+    "lon": -67.755,
+    "zoom": 13,
+    "category": "Radio Astronomy"
+  },
+  {
+    "name": "Kitt Peak National Observatory",
+    "description": "Major optical observatory in Arizona, USA",
+    "lat": 31.958,
+    "lon": -111.596,
+    "zoom": 14,
+    "category": "Astronomy"
+  },
+  {
+    "name": "Green Bank Telescope",
+    "description": "World's largest fully steerable radio telescope, West Virginia",
+    "lat": 38.433,
+    "lon": -79.839,
+    "zoom": 14,
+    "category": "Radio Astronomy"
+  },
+  {
+    "name": "Jodrell Bank Observatory",
+    "description": "Famous radio telescope and UNESCO site, UK",
+    "lat": 53.236,
+    "lon": -2.309,
+    "zoom": 15,
+    "category": "Radio Astronomy"
+  },
+  {
+    "name": "Gran Sasso National Laboratory",
+    "description": "Major underground neutrino and dark matter lab, Italy",
+    "lat": 42.452,
+    "lon": 13.576,
+    "zoom": 14,
+    "category": "Particle Physics"
+  },
+  {
+    "name": "DESY",
+    "description": "Deutsches Elektronen-Synchrotron, Hamburg, Germany",
+    "lat": 53.575,
+    "lon": 9.879,
+    "zoom": 15,
+    "category": "Particle Physics"
+  },
+  {
+    "name": "ESRF",
+    "description": "European Synchrotron Radiation Facility, Grenoble, France",
+    "lat": 45.208,
+    "lon": 5.696,
+    "zoom": 15,
+    "category": "Synchrotron"
+  },
+  {
+    "name": "Argonne National Laboratory",
+    "description": "Major US DOE lab with Advanced Photon Source",
+    "lat": 41.710,
+    "lon": -87.982,
+    "zoom": 14,
+    "category": "Multidisciplinary"
+  },
+  {
+    "name": "Lawrence Berkeley National Laboratory",
+    "description": "Advanced Light Source and historic cyclotron site",
+    "lat": 37.876,
+    "lon": -122.247,
+    "zoom": 15,
+    "category": "Multidisciplinary"
+  },
+  {
+    "name": "Sandia National Laboratories",
+    "description": "Main site in Albuquerque, New Mexico",
+    "lat": 35.050,
+    "lon": -106.546,
+    "zoom": 13,
+    "category": "Nuclear & Energy"
+  },
+  {
+    "name": "Oak Ridge National Laboratory",
+    "description": "Spallation Neutron Source and historic Manhattan Project site",
+    "lat": 35.931,
+    "lon": -84.310,
+    "zoom": 13,
+    "category": "Neutron Science"
+  },
+  {
+    "name": "National Ignition Facility (LLNL)",
+    "description": "World's largest laser at Lawrence Livermore",
+    "lat": 37.692,
+    "lon": -121.700,
+    "zoom": 14,
+    "category": "Fusion"
+  },
+  {
+    "name": "TRIUMF",
+    "description": "Canada's particle accelerator centre, Vancouver",
+    "lat": 49.255,
+    "lon": -123.248,
+    "zoom": 15,
+    "category": "Particle Physics"
+  },
+  {
+    "name": "Paul Scherrer Institute",
+    "description": "Switzerland's largest research institute for natural sciences",
+    "lat": 47.539,
+    "lon": 8.222,
+    "zoom": 14,
+    "category": "Multidisciplinary"
+  },
+  {
+    "name": "KEK",
+    "description": "High Energy Accelerator Research Organization, Japan",
+    "lat": 36.148,
+    "lon": 140.078,
+    "zoom": 14,
+    "category": "Particle Physics"
+  },
+  {
+    "name": "Sudbury Neutrino Observatory",
+    "description": "Underground neutrino lab in Creighton Mine, Canada",
+    "lat": 46.475,
+    "lon": -81.202,
+    "zoom": 15,
+    "category": "Neutrino Physics"
+  },
+  {
+    "name": "Very Large Telescope (VLT)",
+    "description": "Paranal Observatory – European Southern Observatory flagship",
+    "lat": -24.627,
+    "lon": -70.405,
+    "zoom": 14,
+    "category": "Astronomy"
+  },
+  {
+    "name": "Atacama Cosmology Telescope",
+    "description": "High-altitude CMB observatory in Chile",
+    "lat": -22.958,
+    "lon": -67.787,
+    "zoom": 14,
+    "category": "Cosmology"
+  },
+  {
+    "name": "Goldstone Deep Space Communications Complex",
+    "description": "NASA's DSN antenna site in California",
+    "lat": 35.427,
+    "lon": -116.890,
+    "zoom": 13,
+    "category": "Space Communications"
+  },
+  {
+    "name": "Johnson Space Center",
+    "description": "NASA's astronaut training and mission control, Houston",
+    "lat": 29.552,
+    "lon": -95.098,
+    "zoom": 14,
+    "category": "Space"
+  },
+  {
+    "name": "Marshall Space Flight Center",
+    "description": "NASA rocket propulsion research, Huntsville AL",
+    "lat": 34.643,
+    "lon": -86.773,
+    "zoom": 14,
+    "category": "Space"
+  },
+  {
+    "name": "Perimeter Institute",
+    "description": "Theoretical physics research institute, Waterloo Canada",
+    "lat": 43.465,
+    "lon": -80.520,
+    "zoom": 16,
+    "category": "Theoretical Physics"
+  },
+  {
+    "name": "Institute for Advanced Study",
+    "description": "Princeton, NJ – Einstein's former home",
+    "lat": 40.332,
+    "lon": -74.667,
+    "zoom": 16,
+    "category": "Theoretical Physics"
+  },
+  {
+    "name": "Mount Wilson Observatory",
+    "description": "Historic site where Hubble discovered universe expansion",
+    "lat": 34.225,
+    "lon": -118.057,
+    "zoom": 14,
+    "category": "Astronomy"
+  },
+  {
+    "name": "Palomar Observatory",
+    "description": "Famous 200-inch Hale Telescope, California",
+    "lat": 33.356,
+    "lon": -116.865,
+    "zoom": 14,
+    "category": "Astronomy"
+  },
+  {
+    "name": "Effelsberg Radio Telescope",
+    "description": "Large single-dish radio telescope, Germany",
+    "lat": 50.525,
+    "lon": 6.883,
+    "zoom": 15,
+    "category": "Radio Astronomy"
   }
 ]
