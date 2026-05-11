@@ -1,12 +1,18 @@
 module github.com/NimbleMarkets/ntcharts-osm
 
-go 1.26.2
+go 1.25.0
+
+// Awaiting upstream merge of WASM support
+replace charm.land/bubbletea/v2 => github.com/neomantra/bubbletea/v2 v2.0.0-20260506185856-6506c47fa2f3
+
+replace github.com/eliukblau/pixterm => github.com/NimbleMarkets/pixterm v0.0.0-20260428212147-d576e057b538
 
 require (
 	charm.land/bubbles/v2 v2.1.0
 	charm.land/bubbletea/v2 v2.0.6
 	charm.land/lipgloss/v2 v2.0.3
-	github.com/NimbleMarkets/ntcharts/v2 v2.0.3
+	github.com/NimbleMarkets/go-booba v0.6.1-0.20260511134559-58814d532cc1
+	github.com/NimbleMarkets/ntcharts/v2 v2.0.4-0.20260511142858-c7594fa69807
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/flopp/go-staticmaps v0.0.0-20260318105611-d3eb636a6468
 	github.com/golang/geo v0.0.0-20260427214057-41a1a8c7eb2a
@@ -35,12 +41,8 @@ require (
 	github.com/tkrajina/gpxgo v1.4.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/image v0.39.0 // indirect
-	golang.org/x/net v0.33.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 )
-
-replace github.com/eliukblau/pixterm => github.com/NimbleMarkets/pixterm v0.0.0-20260428212147-d576e057b538
-
-replace github.com/NimbleMarkets/ntcharts/v2 => /Users/evan/projects/ntcharts-picture

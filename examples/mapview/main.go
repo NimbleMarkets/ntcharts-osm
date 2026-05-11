@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 
+	booba "github.com/NimbleMarkets/go-booba"
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
@@ -368,9 +369,8 @@ func (m model) View() tea.View {
 }
 
 func main() {
-	p := tea.NewProgram(initialModel())
-	if _, err := p.Run(); err != nil {
-		fmt.Printf("Error: %v\n", err)
+	if err := booba.Run(initialModel()); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
