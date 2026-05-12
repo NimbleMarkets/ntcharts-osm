@@ -857,3 +857,120 @@ func newSolidImage(c color.RGBA) image.Image {
 	}
 	return img
 }
+
+// TestInitDispatchesPicInitOnce pins the picInitDone gate: the first Init()
+// flips the flag and includes pic.Init's terminal queries; subsequent calls
+// only return the render Cmd. Consumers that re-invoke Init() after each
+// state change (the example does this on every list-selection change)
+// shouldn't keep re-issuing CSI 16 t / Kitty-support probes.
+func TestInitDispatchesPicInitOnce(t *testing.T) {
+	m := New(80, 24)
+	if m.picInitDone == nil {
+		t.Fatal("expected picInitDone to be heap-allocated by setInitialValues")
+	}
+	if *m.picInitDone {
+		t.Fatal("expected picInitDone to be false before first Init")
+	}
+
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("first Init should return a Cmd")
+	}
+	if !*m.picInitDone {
+		t.Fatal("expected picInitDone to flip true after first Init")
+	}
+
+	// Second Init: pic.Init must NOT be re-dispatched. We can't easily
+	// inspect the BatchMsg contents without running cmds, but the flag is
+	// the gate — if it stays true, the branch in Init() is taken and
+	// pic.Init is skipped.
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("second Init should still return a render Cmd")
+	}
+	if !*m.picInitDone {
+		t.Fatal("picInitDone must stay true across subsequent Init calls")
+	}
+}
+
+// TestDebouncedFetchSupersededByNewerGen pins the coalescing path: when a
+// tick fires for an older gen (another renderMapCmd bumped renderGen past
+// it), Update no-ops without dispatching the captured fetch.
+func TestDebouncedFetchSupersededByNewerGen(t *testing.T) {
+	m := New(80, 24)
+	// Dispatch the first render; gen becomes 1.
+	if cmd := m.renderMapCmd(); cmd == nil {
+		t.Fatal("expected non-nil Cmd on cache miss")
+	}
+	staleGen := *m.renderGen
+
+	// Bump gen again to simulate a newer render request arriving before
+	// the first tick fired.
+	if cmd := m.renderMapCmd(); cmd == nil {
+		t.Fatal("expected non-nil Cmd on second cache miss")
+	}
+	if *m.renderGen == staleGen {
+		t.Fatal("expected renderGen to advance on second renderMapCmd")
+	}
+
+	// A staleFetchSentinel lets us assert the fetch did NOT run by
+	// checking the Cmd's return value if Update mistakenly dispatched it.
+	var ran bool
+	staleFetch := tea.Cmd(func() tea.Msg { ran = true; return nil })
+	updated, cmd := m.Update(debouncedFetchMsg{gen: staleGen, fetch: staleFetch})
+	if cmd != nil {
+		t.Fatalf("expected nil Cmd for superseded debounced fetch, got non-nil")
+	}
+	if ran {
+		t.Fatal("stale debounced fetch must NOT execute")
+	}
+	if *updated.renderGen != *m.renderGen {
+		t.Fatal("renderGen must not change when dropping a stale debounce msg")
+	}
+}
+
+// TestDebouncedFetchLatestGenDispatchesFetch pins the happy path: when the
+// debouncedFetchMsg's gen still matches renderGen, Update returns the
+// captured fetch as the Cmd so bubbletea will run it.
+func TestDebouncedFetchLatestGenDispatchesFetch(t *testing.T) {
+	m := New(80, 24)
+	if cmd := m.renderMapCmd(); cmd == nil {
+		t.Fatal("expected non-nil Cmd on cache miss")
+	}
+	gen := *m.renderGen
+
+	sentinel := mapImageMsg{gen: 9999, key: renderKey{}, img: nil, err: errExample{}}
+	fetch := tea.Cmd(func() tea.Msg { return sentinel })
+
+	_, cmd := m.Update(debouncedFetchMsg{gen: gen, fetch: fetch})
+	if cmd == nil {
+		t.Fatal("expected current-gen debounce msg to dispatch the captured fetch")
+	}
+	if got := cmd(); got != sentinel {
+		t.Fatalf("expected dispatched Cmd to be the captured fetch, got %#v", got)
+	}
+}
+
+// TestRenderMapCmdMissDebounceDisabled pins the negative-RenderDebounce
+// escape hatch: callers that want the prior behavior (immediate fetch
+// dispatch, no tick coalescing) pass a negative duration.
+func TestRenderMapCmdMissDebounceDisabled(t *testing.T) {
+	m := NewWithConfig(Config{Cols: 80, Rows: 24, RenderDebounce: -1})
+	if m.renderDebounce >= 0 {
+		t.Fatalf("expected negative renderDebounce to pass through, got %v", m.renderDebounce)
+	}
+
+	cmd := m.renderMapCmd()
+	if cmd == nil {
+		t.Fatal("expected non-nil Cmd on cache miss")
+	}
+	// With debouncing disabled, the returned Cmd is the fetch goroutine
+	// itself — running it produces a mapImageMsg directly (we don't
+	// actually execute the goroutine here, but we DO assert the gen got
+	// bumped synchronously, which is the contract the rest of the
+	// inFlight bookkeeping relies on).
+	if *m.renderGen != 1 {
+		t.Fatalf("expected renderGen to be 1 after first miss, got %d", *m.renderGen)
+	}
+	if !m.inFlight() {
+		t.Fatal("expected inFlight true after cache-miss dispatch")
+	}
+}

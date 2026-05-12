@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -30,6 +31,21 @@ type RenderMode = picture.PictureMode
 const (
 	RenderGlyph = picture.PictureGlyph
 	RenderKitty = picture.PictureKitty
+)
+
+// FitMode is an alias for picture.FitMode so callers can use
+// mapview.FitContain / mapview.FitFill / mapview.FitCover without importing
+// the picture package. mapview's renderer pre-sizes the composed image to
+// the cell-rect's pixel AR via composeLetterbox, so the fit setting is
+// usually a no-op visually — it becomes meaningful when the terminal
+// reports a cell-pixel ratio that diverges from picture's 1:2 default
+// (and in Kitty mode where picture's pre-scale runs at that real ratio).
+type FitMode = picture.FitMode
+
+const (
+	FitContain = picture.FitContain
+	FitFill    = picture.FitFill
+	FitCover   = picture.FitCover
 )
 
 type Style int8
@@ -68,6 +84,18 @@ type mapImageMsg struct {
 	err error
 }
 
+// debouncedFetchMsg is delivered by a tea.Tick after Config.RenderDebounce
+// has elapsed since a cache-miss renderMapCmd. Update only runs the captured
+// fetch when msg.gen still matches the latest renderGen — rapid pan/zoom
+// sequences bump renderGen, so older ticks no-op and a single fetch wins.
+// This collapses N rapid renders down to 1, which matters most under WASM
+// where each render's tile fetches contend for the browser's per-host
+// connection cap (~6) and serialize completion order.
+type debouncedFetchMsg struct {
+	gen   uint64
+	fetch tea.Cmd
+}
+
 // IsMapUpdate reports whether msg is a message mapview's Update needs to see.
 // Parents containing other focusable widgets must forward matching messages
 // regardless of focus, otherwise async render results are lost.
@@ -78,7 +106,7 @@ type mapImageMsg struct {
 // the cell-size reply through to picture's auto-apply.
 func IsMapUpdate(msg tea.Msg) bool {
 	switch msg.(type) {
-	case MapCoordinates, mapImageMsg:
+	case MapCoordinates, mapImageMsg, debouncedFetchMsg:
 		return true
 	}
 	return picture.IsPictureMsg(msg)
@@ -181,6 +209,19 @@ type Model struct {
 	// picture.Model scale it back up to the cell rectangle.
 	opticalZoom int
 
+	// renderDebounce delays the actual tile-fetch goroutine in cache-miss
+	// renders so rapid pan/zoom collapses to a single fetch. 0 means the
+	// default (defaultRenderDebounce); negative disables debouncing (every
+	// cache miss dispatches its fetch immediately, prior behavior).
+	renderDebounce time.Duration
+
+	// picInitDone (heap-allocated for value-receiver Init) records whether
+	// pic.Init() has been dispatched. The pic.Init terminal queries
+	// (RequestCellSize / QueryKittySupport) only need to happen once per
+	// session; consumers that re-invoke mapview.Init() as a "re-render
+	// trigger" (e.g. on selection change) shouldn't keep re-issuing them.
+	picInitDone *bool
+
 	// sourceImage caches the most recent un-cropped image returned by a
 	// successful render or cache hit. SetOpticalZoom re-crops this on
 	// the fly so changing the zoom factor doesn't require a fresh
@@ -270,6 +311,21 @@ type Config struct {
 	// source": e.g. Oversample=2 + OpticalZoom=1 gives a 2× zoomed view
 	// that's still as sharp as the un-zoomed default.
 	OpticalZoom int
+
+	// RenderDebounce delays cache-miss tile renders by this much so a
+	// burst of pan/zoom keypresses coalesces into a single fetch. Without
+	// this, holding an arrow key in WASM piles up many concurrent tile
+	// fetches — they contend for the browser's per-host connection cap
+	// (~6) and the latest render's result is often the last to complete,
+	// leaving the loading badge visible the whole time.
+	//
+	// Cache hits are NEVER debounced — revisiting a cached state still
+	// applies instantly with no badge.
+	//
+	//	0 (default) → defaultRenderDebounce (80ms)
+	//	N > 0       → wait N before dispatching the fetch
+	//	N < 0       → disable debouncing (prior behavior)
+	RenderDebounce time.Duration
 }
 
 // New returns a Model sized to cols × rows terminal cells with default
@@ -304,6 +360,7 @@ func NewWithConfig(cfg Config) Model {
 		opticalZoom:    oz,
 		maxAspectRatio: mar,
 		letterboxColor: lbc,
+		renderDebounce: cfg.RenderDebounce,
 	}
 	m.setInitialValues()
 	return m
@@ -365,6 +422,13 @@ func (m *Model) setInitialValues() {
 	}
 	if m.letterboxColor == nil {
 		m.letterboxColor = color.RGBA{R: 0, G: 0, B: 0, A: 0xff}
+	}
+	if m.renderDebounce == 0 {
+		m.renderDebounce = defaultRenderDebounce
+	}
+	if m.picInitDone == nil {
+		var done bool
+		m.picInitDone = &done
 	}
 	m.initialized = true
 }
@@ -592,6 +656,12 @@ const attributionMinRows = 2
 // 80×24 cell viewport that's ~940 KB.
 const defaultRenderCacheCap = 16
 
+// defaultRenderDebounce is how long renderMapCmd waits before dispatching
+// the actual tile fetch on a cache miss. 80ms collapses key-repeat bursts
+// (typical autorepeat ~30-50ms apart) into a single fetch without making
+// a single deliberate keypress feel laggy.
+const defaultRenderDebounce = 80 * time.Millisecond
+
 // renderKey identifies a fully-rendered tile image. All fields participate
 // in the equality comparison, including the serialized marker list, so two
 // states that produce visually identical output share a cache entry.
@@ -737,6 +807,14 @@ func (m *Model) SetRenderMode(mode RenderMode) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// Fit returns the embedded picture.Model's current fit mode.
+func (m Model) Fit() FitMode { return m.pic.Fit() }
+
+// SetFit forwards the fit mode to picture.Model. No-op if unchanged.
+// In Kitty mode this triggers a re-encode; in Glyph mode the next View
+// call picks up the new fit synchronously.
+func (m *Model) SetFit(fit FitMode) tea.Cmd { return m.pic.SetFit(fit) }
+
 // TileStyle returns the currently-selected tile style.
 func (m Model) TileStyle() Style { return m.tileStyle }
 
@@ -766,12 +844,27 @@ func (m *Model) SetStyle(style Style) tea.Cmd {
 	return m.renderMapCmd()
 }
 
-// Init dispatches the first tile render plus picture.Model.Init's terminal
-// cell-size query (RequestCellSize / CSI 16 t). The reply lands as
-// uv.CellSizeEvent in Update, picture auto-applies it via SetCellPixelSize,
-// and subsequent Kitty placements fill the cell rectangle on terminals
-// whose cell ratio isn't the assumed 1:2.
-func (m Model) Init() tea.Cmd { return tea.Batch(m.pic.Init(), m.renderMapCmd()) }
+// Init dispatches the first tile render plus, on the first invocation only,
+// picture.Model.Init's terminal queries (RequestCellSize / CSI 16 t plus
+// the Kitty-support probe). The CellSizeEvent reply auto-applies via
+// SetCellPixelSize, and subsequent Kitty placements fill the cell rectangle
+// on terminals whose cell ratio isn't the assumed 1:2.
+//
+// Callers may invoke Init() repeatedly as a "re-render after state change"
+// signal (e.g. after SetLatLng + SetMarkers from a list-selection handler);
+// the picInitDone flag ensures the one-shot terminal queries don't re-fire
+// on every such call.
+func (m Model) Init() tea.Cmd {
+	var cmds []tea.Cmd
+	if m.picInitDone == nil || !*m.picInitDone {
+		cmds = append(cmds, m.pic.Init())
+		if m.picInitDone != nil {
+			*m.picInitDone = true
+		}
+	}
+	cmds = append(cmds, m.renderMapCmd())
+	return tea.Batch(cmds...)
+}
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if !m.initialized {
@@ -823,6 +916,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, m.renderMapCmd()
 		}
 		return m, nil
+
+	case debouncedFetchMsg:
+		// Coalesce: only the most-recent renderMapCmd's tick actually
+		// fires its fetch. Older ticks (a newer render request bumped
+		// renderGen past their captured gen) no-op here. The latest tick
+		// dispatches its captured fetch as a Cmd.
+		if m.renderGen == nil || msg.gen != *m.renderGen {
+			return m, nil
+		}
+		return m, msg.fetch
 
 	case mapImageMsg:
 		// Drop stale renders: only the most-recently-dispatched generation
@@ -937,8 +1040,9 @@ func (m *Model) renderMapCmd() tea.Cmd {
 	mapW, mapH := targetMapDims(cellRectW, cellRectH, m.maxAspectRatio)
 	letterboxColor := m.letterboxColor
 
-	return func() tea.Msg {
+	fetch := tea.Cmd(func() tea.Msg {
 		ctx := sm.NewContext()
+		configureTileCache(ctx)
 		ctx.SetTileProvider(provider)
 		ctx.SetCenter(s2.LatLngFromDegrees(lat, lng))
 		ctx.SetZoom(tileZoom)
@@ -958,6 +1062,10 @@ func (m *Model) renderMapCmd() tea.Cmd {
 		if err != nil {
 			return mapImageMsg{gen: gen, key: key, img: nil, err: err}
 		}
+		// go-staticmaps' final tile-composite loop just ran on this
+		// goroutine — give JS a slice before the next CPU-heavy step so
+		// pending fetch resolves / key events can drain (no-op on native).
+		yieldToJS()
 		// Compose into a cell-rect-sized canvas with letterbox bands when
 		// MaxAspectRatio shrunk the map portion. The composed image has
 		// the cell rect's pixel AR by construction, so picture's
@@ -965,8 +1073,21 @@ func (m *Model) renderMapCmd() tea.Cmd {
 		// the two render modes show identical layout, including the
 		// letterbox bands baked into the source.
 		composed := composeLetterbox(mapImg, cellRectW, cellRectH, letterboxColor)
+		yieldToJS()
 		return mapImageMsg{gen: gen, key: key, img: composed, err: nil}
+	})
+
+	// Debounce: wait renderDebounce before delivering the captured fetch
+	// to Update. Each call returns its own tick — Update checks msg.gen
+	// against the latest renderGen and only fires the fetch for the most
+	// recent request, so a rapid burst spawns N ticks but only 1 fetch.
+	// Negative renderDebounce disables debouncing (fires fetch immediately).
+	if m.renderDebounce <= 0 {
+		return fetch
 	}
+	return tea.Tick(m.renderDebounce, func(time.Time) tea.Msg {
+		return debouncedFetchMsg{gen: gen, fetch: fetch}
+	})
 }
 
 func (m *Model) lookup(address string) tea.Cmd {

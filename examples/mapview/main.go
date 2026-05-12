@@ -13,6 +13,7 @@
 //   /                    filter the list
 //   g                    toggle Glyph ↔ Kitty rendering
 //   s                    toggle satellite ↔ graphics tiles
+//   f                    cycle picture fit (Contain → Fill → Cover)
 //   q / ctrl+c           quit
 package main
 
@@ -43,6 +44,17 @@ func styleName(s mapview.Style) string {
 		return "Satellite"
 	default:
 		return "Graphics"
+	}
+}
+
+func fitName(f mapview.FitMode) string {
+	switch f {
+	case mapview.FitFill:
+		return "Fill"
+	case mapview.FitCover:
+		return "Cover"
+	default:
+		return "Contain"
 	}
 }
 
@@ -101,6 +113,7 @@ type appKeys struct {
 	filter   key.Binding
 	mode     key.Binding
 	style    key.Binding
+	fit      key.Binding
 	help     key.Binding
 	quit     key.Binding
 }
@@ -114,20 +127,21 @@ func newAppKeys() appKeys {
 		filter:  key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		mode:    key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "mode")),
 		style:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "style")),
+		fit:     key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "fit")),
 		help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more")),
 		quit:    key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}
 }
 
 func (k appKeys) ShortHelp() []key.Binding {
-	return []key.Binding{k.pan, k.zoom, k.optZoom, k.listNav, k.filter, k.mode, k.style, k.help, k.quit}
+	return []key.Binding{k.pan, k.zoom, k.optZoom, k.listNav, k.filter, k.mode, k.style, k.fit, k.help, k.quit}
 }
 
 func (k appKeys) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.pan, k.zoom, k.optZoom},
 		{k.listNav, k.filter},
-		{k.mode, k.style, k.help, k.quit},
+		{k.mode, k.style, k.fit, k.help, k.quit},
 	}
 }
 
@@ -240,6 +254,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				next = mapview.ArcgisWorldImagery
 			}
 			return m, m.mv.SetStyle(next)
+		case "f":
+			// Cycle picture's fit mode Contain → Fill → Cover → Contain.
+			// Usually a no-op visually since composeLetterbox normalizes
+			// the source AR to the cell-rect, but exposes the picture
+			// setting for terminals with non-1:2 cell-pixel ratios.
+			next := mapview.FitContain
+			switch m.mv.Fit() {
+			case mapview.FitContain:
+				next = mapview.FitFill
+			case mapview.FitFill:
+				next = mapview.FitCover
+			}
+			return m, m.mv.SetFit(next)
 		case "]":
 			// Optical zoom in — re-crops the cached source, no network.
 			return m, m.mv.SetOpticalZoom(m.mv.OpticalZoom() + 1)
@@ -360,8 +387,8 @@ func (m model) View() tea.View {
 	if oz := m.mv.OpticalZoom(); oz > 0 {
 		optical = fmt.Sprintf("  ×%d", 1<<oz)
 	}
-	status := fmt.Sprintf("%.4f,%.4f z%d%s  %s  %s",
-		lat, lng, m.mv.Zoom(), optical, mode, styleName(m.mv.TileStyle()))
+	status := fmt.Sprintf("%.4f,%.4f z%d%s  %s  %s  %s",
+		lat, lng, m.mv.Zoom(), optical, mode, styleName(m.mv.TileStyle()), fitName(m.mv.Fit()))
 
 	footer := footerStyle.Width(m.width).Render(status)
 	helpView := m.help.View(m.keys)
