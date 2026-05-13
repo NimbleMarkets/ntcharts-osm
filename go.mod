@@ -5,14 +5,16 @@ go 1.25.0
 // Awaiting upstream merge of WASM support
 replace charm.land/bubbletea/v2 => github.com/neomantra/bubbletea/v2 v2.0.0-20260506185856-6506c47fa2f3
 
-replace github.com/eliukblau/pixterm => github.com/NimbleMarkets/pixterm v0.0.0-20260428212147-d576e057b538
+replace github.com/atotto/clipboard => github.com/neomantra/clipboard v0.0.0-20260506203444-114abb315f8d
+
+tool github.com/NimbleMarkets/go-booba/cmd/booba-assets
 
 require (
 	charm.land/bubbles/v2 v2.1.0
 	charm.land/bubbletea/v2 v2.0.6
 	charm.land/lipgloss/v2 v2.0.3
 	github.com/NimbleMarkets/go-booba v0.6.1-0.20260511134559-58814d532cc1
-	github.com/NimbleMarkets/ntcharts/v2 v2.0.4-0.20260511142858-c7594fa69807
+	github.com/NimbleMarkets/ntcharts/v2 v2.0.4-0.20260512133525-5d985e3dc7e7
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/flopp/go-staticmaps v0.0.0-20260318105611-d3eb636a6468
 	github.com/golang/geo v0.0.0-20260427214057-41a1a8c7eb2a
@@ -38,6 +40,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sahilm/fuzzy v0.1.1 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tkrajina/gpxgo v1.4.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/image v0.39.0 // indirect

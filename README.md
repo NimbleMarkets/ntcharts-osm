@@ -2,7 +2,7 @@
 
 <p>
     <a href="https://github.com/NimbleMarkets/ntcharts-osm/tags"><img src="https://img.shields.io/github/tag/NimbleMarkets/ntcharts-osm.svg" alt="Latest Release"></a>
-    <a href="https://pkg.go.dev/github.com/NimbleMarkets/ntcharts-osm?tab=doc"><img src="https://godoc.org/github.com/golang/gddo?status.svg" alt="GoDoc"></a>
+    <a href="https://pkg.go.dev/github.com/NimbleMarkets/ntcharts-osm?tab=doc"><img src="https://godoc.org/github.com/NimbleMarkets/ntcharts-osm?status.svg" alt="GoDoc"></a>
     <a href="https://github.com/NimbleMarkets/ntcharts-osm/blob/main/CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg"  alt="Code Of Conduct"></a>
 </p>
 
@@ -88,6 +88,8 @@ Targets Bubble Tea **v2** (`charm.land/bubbletea/v2`). No v1 backport.
 - **Geocoding uses Nominatim** with no caching. Respect their [usage policy](https://operations.osmfoundation.org/policies/nominatim/) for production traffic.
 
 ## License
+
+Many thanks to the **OpenStreetMap Foundation** ([donate](https://supporting.openstreetmap.org/donate/)).
 
 [MIT License](./LICENSE.txt) — Copyright (c) 2026 [Neomantra Corp](https://www.neomantra.com).
 

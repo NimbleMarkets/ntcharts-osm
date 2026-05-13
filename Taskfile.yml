@@ -79,3 +79,34 @@ tasks:
       - build-ex-mapview
     cmds:
       - vhs --output ./examples/mapview/demo.gif ./examples/mapview/demo.tape
+
+###############################################################################
+# Demo website via booba
+
+  build-wasm-site:
+    desc: 'Build the WASM showcase site into web/'
+    deps: [go-tidy]
+    cmds:
+      - GOARCH=wasm GOOS=js go build -o web/app.wasm ./examples/mapview/
+      - go tool booba-assets web/
+    generates:
+      - web/app.wasm
+
+  serve-wasm-site:
+    desc: 'Serve web/ at http://localhost:8000/ntcharts-osm/ (matches GH Pages prefix)'
+    deps: [build-wasm-site]
+    vars:
+      SERVE_DIR: /tmp/ntcharts-osm-site
+    cmds:
+      - mkdir -p {{.SERVE_DIR}}
+      - rm -f {{.SERVE_DIR}}/ntcharts-osm
+      - ln -sfn "$(pwd)/web" {{.SERVE_DIR}}/ntcharts-osm
+      - echo 'Serving at http://localhost:8000/ntcharts-osm/'
+      - cd {{.SERVE_DIR}} && python3 -m http.server 8000
+
+  clean-wasm-site:
+    desc: 'Remove generated showcase artifacts'
+    cmds:
+      - rm -rf web/_assets/booba web/_assets/ghostty-web
+      - rm -f web/_assets/wasm_exec.js web/_assets/index.html
+      - rm -f web/app.wasm
