@@ -96,20 +96,41 @@ type debouncedFetchMsg struct {
 	fetch tea.Cmd
 }
 
+// IsMapOwnMsg reports whether msg is one of mapview's own internal messages
+// (MapCoordinates input, async tile-render results, debounce ticks). These
+// belong to a single mapview instance — route them only to the Model that
+// produced or expects them.
+//
+// Use this when you have multiple picture-using components in the same
+// program and need to disambiguate "this message is mine" from "this is a
+// shared picture runtime message everyone should see". For the broader
+// "should mapview's Update see this?" predicate, use [IsMapUpdate].
+func IsMapOwnMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case MapCoordinates, mapImageMsg, debouncedFetchMsg:
+		return true
+	}
+	return false
+}
+
 // IsMapUpdate reports whether msg is a message mapview's Update needs to see.
 // Parents containing other focusable widgets must forward matching messages
 // regardless of focus, otherwise async render results are lost.
+//
+// This is a "may need this" predicate, NOT an ownership predicate. It
+// returns true for both [IsMapOwnMsg] (map-only messages) AND every
+// [picture.IsPictureMsg] (KittyFrameMsg, uv.CellSizeEvent, capability
+// probes). Picture messages are program-wide: if more than one component
+// in your program embeds picture.Model, do NOT route them with else-if —
+// broadcast them to every picture owner. See README's "Routing messages
+// across multiple picture owners" for the pattern.
 //
 // picture.IsPictureMsg covers KittyFrameMsg AND uv.CellSizeEvent (the
 // terminal's reply to picture.RequestCellSize, which mapview.Init dispatches
 // via m.pic.Init), so consumers gating forwarding on this helper still route
 // the cell-size reply through to picture's auto-apply.
 func IsMapUpdate(msg tea.Msg) bool {
-	switch msg.(type) {
-	case MapCoordinates, mapImageMsg, debouncedFetchMsg:
-		return true
-	}
-	return picture.IsPictureMsg(msg)
+	return IsMapOwnMsg(msg) || picture.IsPictureMsg(msg)
 }
 
 type NominatimResponse []struct {
