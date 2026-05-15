@@ -471,6 +471,7 @@ func TestPadLinesBottom(t *testing.T) {
 // grid+APC. A buggy crop (e.g. one that shifted bounds or emitted
 // wrong-size output) would break this end-to-end.
 func TestSetOpticalZoom_KittyEndToEnd(t *testing.T) {
+	forceKittySupported(t)
 	m := New(80, 24)
 
 	// Toggle into Kitty mode. SetRenderMode bumps renderGen via its
@@ -793,6 +794,7 @@ func TestSetMarkersStoresAndClears(t *testing.T) {
 }
 
 func TestSetRenderModeTogglesAndReRenders(t *testing.T) {
+	forceKittySupported(t)
 	m := New(80, 24)
 
 	if m.RenderMode() != RenderGlyph {
@@ -844,9 +846,43 @@ func TestIsMapUpdateRecognizesPictureMessages(t *testing.T) {
 	}
 }
 
+// TestIsMapOwnMsgExcludesPictureMessages pins the IsMapOwnMsg / IsMapUpdate
+// split: the narrow predicate must match map-only messages and reject
+// shared picture runtime messages, so multi-picture-owner consumers can
+// safely route by ownership.
+func TestIsMapOwnMsgExcludesPictureMessages(t *testing.T) {
+	if !IsMapOwnMsg(mapImageMsg{}) {
+		t.Error("expected mapImageMsg to be a map-own msg")
+	}
+	if !IsMapOwnMsg(MapCoordinates{}) {
+		t.Error("expected MapCoordinates to be a map-own msg")
+	}
+	if !IsMapOwnMsg(debouncedFetchMsg{}) {
+		t.Error("expected debouncedFetchMsg to be a map-own msg")
+	}
+	if IsMapOwnMsg(picture.KittyFrameMsg{}) {
+		t.Error("KittyFrameMsg is a shared picture runtime msg, not map-owned")
+	}
+	if IsMapOwnMsg("random string") {
+		t.Error("expected unrelated messages to not be a map-own msg")
+	}
+}
+
 type errExample struct{}
 
 func (errExample) Error() string { return "render boom" }
+
+// forceKittySupported flips the package-global Kitty capability to
+// Supported for the duration of t. picture.Toggle() silently no-ops
+// unless the capability is affirmatively Supported, which never happens
+// in a test process — without this helper, SetRenderMode(RenderKitty)
+// is a no-op and the model stays in Glyph mode.
+func forceKittySupported(t *testing.T) {
+	t.Helper()
+	prev := picture.KittySupported()
+	picture.ForceKittyCapability(picture.KittyCapabilitySupported)
+	t.Cleanup(func() { picture.ForceKittyCapability(prev) })
+}
 
 func newSolidImage(c color.RGBA) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))

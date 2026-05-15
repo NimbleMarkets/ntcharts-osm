@@ -78,6 +78,34 @@ task build-ex-mapview
 
 Targets Bubble Tea **v2** (`charm.land/bubbletea/v2`). No v1 backport.
 
+## Routing messages across multiple picture owners
+
+`mapview.IsMapUpdate(msg)` is a **"may need this"** predicate, not an ownership predicate. It returns `true` for both mapview's own messages *and* for every `picture.IsPictureMsg` (Kitty frames, cell-size events, capability probes). Picture messages are program-wide — they belong to the runtime, not to any one model.
+
+If your program embeds `picture.Model` in more than one place (say, a `mapview.Model` *and* a `pictureurl.Model` rendering a product image), do NOT route picture messages with `else if` — broadcast them to every picture owner, otherwise one of them will starve:
+
+```go
+mapMsg := mapview.IsMapUpdate(msg)
+prodMsg := pictureurl.IsPictureMsg(msg)
+
+if mapMsg || prodMsg {
+    var cmds []tea.Cmd
+    if mapMsg {
+        var cmd tea.Cmd
+        m.mv, cmd = m.mv.Update(msg)
+        cmds = append(cmds, cmd)
+    }
+    if prodMsg {
+        var cmd tea.Cmd
+        m.prod, cmd = m.prod.Update(msg)
+        cmds = append(cmds, cmd)
+    }
+    return m, tea.Batch(cmds...)
+}
+```
+
+For the narrower "is this message owned by mapview alone" predicate (the `MapCoordinates` input, async tile-render results, debounce ticks), use `mapview.IsMapOwnMsg(msg)`. Each model's own `Update` already filters by instance ID where applicable, so broadcasting picture messages is safe.
+
 ## Known caveats
 
 - **Tile fetching is synchronous per render.** Each render builds its own `*sm.Context` inside the dispatched goroutine and tags the result with a generation counter, so rapid pan / zoom / resize fires safely-parallel renders and stale results are dropped. Composited images are kept in a small per-Model LRU keyed on `(lat, lng, zoom, cols, rows, style, oversample, markers)` — revisiting a state hits the cache synchronously (no goroutine, no Loading overlay). Default cap is 16 entries; tune via `mapview.NewWithConfig(Config{CacheCap: N})` (`-1` disables caching).
