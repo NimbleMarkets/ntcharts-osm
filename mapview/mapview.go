@@ -641,6 +641,12 @@ func (m Model) Center() (lat, lng float64) { return m.lat, m.lng }
 // Zoom returns the current zoom level.
 func (m Model) Zoom() int { return m.zoom }
 
+// Image returns the full-resolution composited map bitmap from the most
+// recent successful render or cache hit, or nil when nothing has been
+// rendered yet. It is the un-cropped source — optical zoom is applied
+// downstream — so hosts can use it for a screenshot or export.
+func (m Model) Image() image.Image { return m.sourceImage }
+
 // maxOSMZoom caps the OSM tile zoom we'll request, including any oversample
 // boost. Most providers serve up to z=19; going higher returns 404s.
 const maxOSMZoom = 19

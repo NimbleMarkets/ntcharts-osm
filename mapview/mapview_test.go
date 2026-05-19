@@ -1010,3 +1010,22 @@ func TestRenderMapCmdMissDebounceDisabled(t *testing.T) {
 		t.Fatal("expected inFlight true after cache-miss dispatch")
 	}
 }
+
+// TestImageAccessor verifies Image() exposes the composited map bitmap so
+// hosts can grab the rendered map (e.g. for a screenshot or export).
+func TestImageAccessor(t *testing.T) {
+	m := New(80, 24)
+	if m.Image() != nil {
+		t.Error("Image() should be nil before any render completes")
+	}
+	img := newSolidImage(color.RGBA{R: 10, G: 20, B: 30, A: 255})
+	// gen 0 matches the freshly-constructed Model's renderGen of 0 so the
+	// message is accepted as a successful render.
+	updated, _ := m.Update(mapImageMsg{img: img})
+	if updated.Image() == nil {
+		t.Fatal("Image() nil after a successful render")
+	}
+	if updated.Image() != updated.sourceImage {
+		t.Error("Image() should return the cached sourceImage bitmap")
+	}
+}
