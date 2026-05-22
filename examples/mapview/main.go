@@ -366,7 +366,9 @@ func (m model) detailView(innerW, innerH int) string {
 
 func (m model) View() tea.View {
 	if m.width == 0 || m.height == 0 {
-		return tea.NewView("loading…")
+		v := tea.NewView("loading…")
+		v.AltScreen = true
+		return v
 	}
 
 	L := m.layout()
@@ -392,7 +394,9 @@ func (m model) View() tea.View {
 
 	footer := footerStyle.Width(m.width).Render(status)
 	helpView := m.help.View(m.keys)
-	return tea.NewView(lipgloss.JoinVertical(lipgloss.Left, body, footer, helpView))
+	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left, body, footer, helpView))
+	v.AltScreen = true
+	return v
 }
 
 func main() {
