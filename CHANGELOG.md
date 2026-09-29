@@ -1,7 +1,8 @@
 # `ntcharts-osm` CHANGELOG
 
-## Unreleased
+## v0.2.0 (2026-09-29)
 
+ * feat(demo): add a textured ntcharts3d map surface with independent camera and map controls.
  * feat(mapview): add optional Harmonica v0.2.0 spring animation for buffered arrow panning; enable smooth movement in the native demo.
  * feat(mapview): add optional buffered panning with background border refills and serialized Kitty presentation; enable it in the native demo and use smaller screen-relative pan steps.
  * fix(mapview): preserve the glyph cache across value-receiver redraws and avoid re-rendering the map when switching display modes.
