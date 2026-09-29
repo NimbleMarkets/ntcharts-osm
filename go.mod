@@ -2,10 +2,8 @@ module github.com/NimbleMarkets/ntcharts-osm
 
 go 1.26.8
 
-// Awaiting upstream merge of WASM support
-replace charm.land/bubbletea/v2 => github.com/neomantra/bubbletea/v2 v2.0.0-20260928192001-1b36865b418a
-
-replace github.com/atotto/clipboard => github.com/neomantra/clipboard v0.0.0-20260506203444-114abb315f8d
+// Marker performance fixes; switch back when github.com/flopp/go-staticmaps includes them.
+replace github.com/flopp/go-staticmaps => github.com/neomantra/go-staticmaps v0.0.0-20260929043700-f2bb572a3f0b
 
 tool github.com/NimbleMarkets/go-booba/cmd/booba-assets
 

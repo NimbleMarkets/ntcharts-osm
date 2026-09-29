@@ -1,0 +1,9 @@
+// WASM builds use these forks until upstream supports js/wasm.
+// Native builds use the upstream dependencies in go.mod.
+go 1.26.8
+
+use .
+
+replace charm.land/bubbletea/v2 => github.com/neomantra/bubbletea/v2 v2.0.0-20260928192001-1b36865b418a
+
+replace github.com/atotto/clipboard => github.com/neomantra/clipboard v0.0.0-20260506203444-114abb315f8d

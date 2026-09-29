@@ -88,7 +88,7 @@ tasks:
     desc: 'Build the WASM showcase site into web/'
     deps: [go-tidy]
     cmds:
-      - GOARCH=wasm GOOS=js go build -o web/app.wasm ./examples/mapview/
+      - GOWORK="$PWD/wasm.work" GOARCH=wasm GOOS=js go build -o web/app.wasm ./examples/mapview/
       - go tool booba-assets web/
     generates:
       - web/app.wasm

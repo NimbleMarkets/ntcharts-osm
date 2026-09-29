@@ -22,7 +22,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build WASM binary
-        run: GOARCH=wasm GOOS=js go build -o web/app.wasm ./examples/mapview/
+        run: GOWORK="$PWD/wasm.work" GOARCH=wasm GOOS=js go build -o web/app.wasm ./examples/mapview/
       - name: Set up web assets
         run: go tool booba-assets web/
       - uses: actions/configure-pages@v6
