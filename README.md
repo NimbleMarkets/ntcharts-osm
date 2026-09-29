@@ -74,6 +74,8 @@ task build-ex-mapview
 
 `mv.SetRenderMode(mode)` returns a `tea.Cmd` that re-renders at the new mode. Toggling away from Kitty automatically deletes the uploaded image so no ghost stays in the terminal.
 
+The WASM browser demo requests Kitty shared-memory transport through booba v0.7.0. Press `g` to switch from the initial glyph mode to Kitty rendering. Native demos keep direct transmission, including over SSH. Other consumers can opt in with `mapview.Config{KittyMedium: mapview.KittyMediumSharedMemory}` when their terminal or browser bridge supports it. Shared-memory allocation or bridge failures fall back to direct transmission.
+
 ## Bubble Tea version
 
 Targets Bubble Tea **v2** (`charm.land/bubbletea/v2`). No v1 backport.

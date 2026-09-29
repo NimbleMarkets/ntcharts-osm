@@ -33,6 +33,14 @@ const (
 	RenderKitty = picture.PictureKitty
 )
 
+// KittyMedium selects the transport used for Kitty images.
+type KittyMedium = picture.KittyMedium
+
+const (
+	KittyMediumDirect       = picture.KittyMediumDirect
+	KittyMediumSharedMemory = picture.KittyMediumSharedMemory
+)
+
 // FitMode is an alias for picture.FitMode so callers can use
 // mapview.FitContain / mapview.FitFill / mapview.FitCover without importing
 // the picture package. mapview's renderer pre-sizes the composed image to
@@ -255,6 +263,12 @@ type Model struct {
 
 // Config configures a Model at construction.
 type Config struct {
+	// KittyMedium selects direct transmission (default) or shared memory.
+	// Shared memory requires a compatible local terminal or browser bridge;
+	// use direct transmission over SSH. Allocation or browser bridge failures
+	// fall back to direct transmission as handled by picture.Model.
+	KittyMedium KittyMedium
+
 	// Cols and Rows are the initial cell-rectangle dimensions. Equivalent
 	// to calling New(cols, rows). Leaving them zero is fine — most
 	// consumers learn the real size from the first tea.WindowSizeMsg and
@@ -384,6 +398,7 @@ func NewWithConfig(cfg Config) Model {
 		renderDebounce: cfg.RenderDebounce,
 	}
 	m.setInitialValues()
+	m.pic.SetKittyMedium(cfg.KittyMedium)
 	return m
 }
 

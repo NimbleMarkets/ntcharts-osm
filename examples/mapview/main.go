@@ -6,35 +6,37 @@
 // (Kitty, Ghostty, WezTerm).
 //
 // Keys:
-//   arrows               pan the map
-//   + / -                zoom in / out (refetches tiles)
-//   ] / [                optical zoom in / out (no fetch — crops the cached source)
-//   shift-up/down, j/k   change list selection (map jumps to it automatically)
-//   /                    filter the list
-//   g                    toggle Glyph ↔ Kitty rendering
-//   s                    toggle satellite ↔ graphics tiles
-//   f                    cycle picture fit (Contain → Fill → Cover)
-//   q / ctrl+c           quit
+//
+//	arrows               pan the map
+//	+ / -                zoom in / out (refetches tiles)
+//	] / [                optical zoom in / out (no fetch — crops the cached source)
+//	shift-up/down, j/k   change list selection (map jumps to it automatically)
+//	/                    filter the list
+//	g                    toggle Glyph ↔ Kitty rendering
+//	s                    toggle satellite ↔ graphics tiles
+//	f                    cycle picture fit (Contain → Fill → Cover)
+//	q / ctrl+c           quit
 package main
 
 import (
 	"fmt"
 	"os"
+	"runtime"
 
-	booba "github.com/NimbleMarkets/go-booba"
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	booba "github.com/NimbleMarkets/go-booba"
 	"github.com/NimbleMarkets/ntcharts-osm/mapview"
 )
 
 const (
 	// Left column scales with terminal width up to leftColMaxInnerWidth, never
 	// exceeding 70% of the total width (leftColMaxFractionPct).
-	leftColMinInnerWidth = 30
-	leftColMaxInnerWidth = 60
+	leftColMinInnerWidth  = 30
+	leftColMaxInnerWidth  = 60
 	leftColMaxFractionPct = 70
 )
 
@@ -106,16 +108,16 @@ func listKeyMap() list.KeyMap {
 // list keys are owned by the embedded models; this struct only exists so the
 // help bubble has a single KeyMap to render from.
 type appKeys struct {
-	pan      key.Binding
-	zoom     key.Binding
-	optZoom  key.Binding
-	listNav  key.Binding
-	filter   key.Binding
-	mode     key.Binding
-	style    key.Binding
-	fit      key.Binding
-	help     key.Binding
-	quit     key.Binding
+	pan     key.Binding
+	zoom    key.Binding
+	optZoom key.Binding
+	listNav key.Binding
+	filter  key.Binding
+	mode    key.Binding
+	style   key.Binding
+	fit     key.Binding
+	help    key.Binding
+	quit    key.Binding
 }
 
 func newAppKeys() appKeys {
@@ -180,7 +182,13 @@ func initialModel() model {
 	// Oversample: 2 gives a 2× pixel-density tile-canvas at +1 OSM zoom,
 	// which Kitty terminals downscale to a noticeably sharper image at no
 	// extra geographic coverage. Glyph mode is unaffected visually.
-	mv := mapview.NewWithConfig(mapview.Config{Oversample: 2})
+	cfg := mapview.Config{Oversample: 2}
+	if runtime.GOOS == "js" && runtime.GOARCH == "wasm" {
+		// Booba v0.7.0 bundles the browser shared-memory bridge. Native
+		// demos retain direct transport so they also work over SSH.
+		cfg.KittyMedium = mapview.KittyMediumSharedMemory
+	}
+	mv := mapview.NewWithConfig(cfg)
 	mv.KeyMap = mapKeyMap()
 	mv.SetLatLng(first.Lat, first.Lon, first.Zoom)
 	mv.SetMarkers([]mapview.Marker{{Lat: first.Lat, Lng: first.Lon}})
