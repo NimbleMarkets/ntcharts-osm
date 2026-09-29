@@ -15,8 +15,10 @@ require (
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/NimbleMarkets/go-booba v0.7.0
 	github.com/NimbleMarkets/ntcharts/v2 v2.4.0
+	github.com/charmbracelet/harmonica v0.2.0
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/flopp/go-staticmaps v0.0.0-20260318105611-d3eb636a6468
+	github.com/fogleman/gg v1.3.0
 	github.com/golang/geo v0.0.0-20260928092222-7d12f68cfadb
 )
 
@@ -32,7 +34,6 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
 	github.com/flopp/go-coordsparser v0.0.0-20250311184423-61a7ff62d17c // indirect
-	github.com/fogleman/gg v1.3.0 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-runewidth v0.0.30 // indirect

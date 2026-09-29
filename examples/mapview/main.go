@@ -19,6 +19,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"runtime"
@@ -157,7 +158,7 @@ type model struct {
 	width, height int
 }
 
-func initialModel() model {
+func initialModel(medium mapview.KittyMedium) model {
 	places, err := mapview.EmbeddedPlaces()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load places: %v\n", err)
@@ -182,11 +183,11 @@ func initialModel() model {
 	// Oversample: 2 gives a 2× pixel-density tile-canvas at +1 OSM zoom,
 	// which Kitty terminals downscale to a noticeably sharper image at no
 	// extra geographic coverage. Glyph mode is unaffected visually.
-	cfg := mapview.Config{Oversample: 2}
-	if runtime.GOOS == "js" && runtime.GOARCH == "wasm" {
-		// Booba v0.7.0 bundles the browser shared-memory bridge. Native
-		// demos retain direct transport so they also work over SSH.
-		cfg.KittyMedium = mapview.KittyMediumSharedMemory
+	cfg := mapview.Config{Oversample: 2, KittyMedium: medium}
+	if runtime.GOOS != "js" {
+		// Buffer nearby tiles for smooth panning and refill in the background.
+		cfg.PanBuffer = 1
+		cfg.SmoothPan = true
 	}
 	mv := mapview.NewWithConfig(cfg)
 	mv.KeyMap = mapKeyMap()
@@ -408,7 +409,25 @@ func (m model) View() tea.View {
 }
 
 func main() {
-	if err := booba.Run(initialModel()); err != nil {
+	defaultMedium := "direct"
+	if runtime.GOOS == "js" && runtime.GOARCH == "wasm" {
+		defaultMedium = "shm"
+	}
+	mediumFlag := flag.String("medium", defaultMedium, "Kitty transport: direct or shm (local compatible terminals only)")
+	flag.Parse()
+	medium := mapview.KittyMediumDirect
+	switch *mediumFlag {
+	case "direct":
+	case "shm":
+		medium = mapview.KittyMediumSharedMemory
+	default:
+		fmt.Fprintf(os.Stderr, "unknown medium %q: use direct or shm\n", *mediumFlag)
+		os.Exit(2)
+	}
+	m := initialModel(medium)
+	err := booba.Run(m)
+	m.mv.Close()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

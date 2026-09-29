@@ -8,7 +8,6 @@ import (
 	"image/color"
 	"image/draw"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -115,7 +114,7 @@ type debouncedFetchMsg struct {
 // "should mapview's Update see this?" predicate, use [IsMapUpdate].
 func IsMapOwnMsg(msg tea.Msg) bool {
 	switch msg.(type) {
-	case MapCoordinates, mapImageMsg, debouncedFetchMsg:
+	case MapCoordinates, mapImageMsg, debouncedFetchMsg, bufferImageMsg, panRenderTickMsg, panPictureMsg, panPresentedMsg, panAnimationMsg:
 		return true
 	}
 	return false
@@ -178,11 +177,9 @@ type Marker struct {
 	Size     float64
 }
 
-// Model is a Bubble Tea model that renders a tile map. Rendering is delegated
-// to an embedded picture.Model; mapview owns geo state, key handling, and
-// async tile/geocode fetches. Each render builds its own *sm.Context inside
-// the goroutine — the Model holds no shared mutable tile context — so rapid
-// pan / zoom / resize can safely fire many renders in parallel.
+// Model renders a tile map using picture.Model and handles navigation,
+// tile fetching, and geocoding. Each tile render uses a separate sm.Context.
+// Buffered rendering runs one fetch at a time and reuses nearby pixels.
 type Model struct {
 	KeyMap KeyMap
 	Style  lipgloss.Style
@@ -257,12 +254,26 @@ type Model struct {
 	// network/tile fetch.
 	sourceImage image.Image
 
-	pic    picture.Model
+	// Use a pointer to preserve the glyph cache across View calls.
+	pic    *picture.Model
 	errMsg string
+
+	smoothPan      bool
+	panBufferTiles int
+	panState       *panState
 }
 
 // Config configures a Model at construction.
 type Config struct {
+	// SmoothPan animates arrow movement with a critically damped spring.
+	// Requires PanBuffer > 0; disabled by default.
+	SmoothPan bool
+
+	// PanBuffer sets the buffered border width in tiles, clamped to 0..4.
+	// Zero disables buffering. Panning crops the buffer and refills it near
+	// an edge. Fetches run one at a time and ignore RenderDebounce.
+	PanBuffer int
+
 	// KittyMedium selects direct transmission (default) or shared memory.
 	// Shared memory requires a compatible local terminal or browser bridge;
 	// use direct transmission over SSH. Allocation or browser bridge failures
@@ -396,6 +407,8 @@ func NewWithConfig(cfg Config) Model {
 		maxAspectRatio: mar,
 		letterboxColor: lbc,
 		renderDebounce: cfg.RenderDebounce,
+		panBufferTiles: max(0, min(4, cfg.PanBuffer)),
+		smoothPan:      cfg.SmoothPan,
 	}
 	m.setInitialValues()
 	m.pic.SetKittyMedium(cfg.KittyMedium)
@@ -437,7 +450,11 @@ func (m *Model) setInitialValues() {
 	m.lat = 25.0782266
 	m.lng = -77.3383438
 	m.loc = ""
-	m.pic = picture.New()
+	pic := picture.New()
+	m.pic = &pic
+	if m.panState == nil {
+		m.panState = &panState{}
+	}
 	m.pic.SetSize(m.cols, m.picRows())
 	if m.renderGen == nil {
 		var g uint64
@@ -485,10 +502,11 @@ func (m *Model) SetOpticalZoom(n int) tea.Cmd {
 		return nil
 	}
 	m.opticalZoom = n
-	if m.sourceImage == nil {
+	source := m.Image()
+	if source == nil {
 		return m.renderMapCmd()
 	}
-	return m.pic.SetImage(opticalCrop(m.sourceImage, opticalCropFactor(n)))
+	return m.pic.SetImage(opticalCrop(source, opticalCropFactor(n)))
 }
 
 // opticalCropFactor returns the linear divisor for a given OpticalZoom
@@ -660,7 +678,12 @@ func (m Model) Zoom() int { return m.zoom }
 // recent successful render or cache hit, or nil when nothing has been
 // rendered yet. It is the un-cropped source — optical zoom is applied
 // downstream — so hosts can use it for a screenshot or export.
-func (m Model) Image() image.Image { return m.sourceImage }
+func (m Model) Image() image.Image {
+	if m.panBufferTiles > 0 && m.panState != nil {
+		return m.panState.visible
+	}
+	return m.sourceImage
+}
 
 // maxOSMZoom caps the OSM tile zoom we'll request, including any oversample
 // boost. Most providers serve up to z=19; going higher returns 404s.
@@ -837,20 +860,41 @@ func (m *Model) SetLocation(loc string, zoom int) {
 }
 
 // RenderMode returns the embedded picture.Model's mode.
-func (m Model) RenderMode() RenderMode { return m.pic.Mode() }
+func (m Model) RenderMode() RenderMode {
+	if m.pic == nil {
+		return RenderGlyph
+	}
+	return m.pic.Mode()
+}
 
-// SetRenderMode forwards to picture.Model.Toggle when needed and re-renders.
+// Close releases pending shared-memory images after the Bubble Tea program exits.
+func (m *Model) Close() {
+	if m.pic != nil {
+		m.pic.SetImage(nil)
+	}
+}
+
+// SetRenderMode changes the display mode, reusing the current image.
+// It fetches the map if no image is available.
 func (m *Model) SetRenderMode(mode RenderMode) tea.Cmd {
 	var cmds []tea.Cmd
 	if m.pic.Mode() != mode {
 		cmds = append(cmds, m.pic.Toggle())
+	}
+	if m.Image() != nil {
+		return tea.Batch(cmds...)
 	}
 	cmds = append(cmds, m.renderMapCmd())
 	return tea.Batch(cmds...)
 }
 
 // Fit returns the embedded picture.Model's current fit mode.
-func (m Model) Fit() FitMode { return m.pic.Fit() }
+func (m Model) Fit() FitMode {
+	if m.pic == nil {
+		return FitContain
+	}
+	return m.pic.Fit()
+}
 
 // SetFit forwards the fit mode to picture.Model. No-op if unchanged.
 // In Kitty mode this triggers a re-encode; in Glyph mode the next View
@@ -914,35 +958,66 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case panAnimationMsg:
+		return m.updatePanAnimation(msg)
+
+	case panPictureMsg:
+		if msg.owner != m.panState {
+			return m, nil
+		}
+		cmd := m.pic.Update(msg.msg)
+		return m, tea.Sequence(cmd, func() tea.Msg { return panPresentedMsg{owner: msg.owner} })
+
+	case panPresentedMsg:
+		if msg.owner != m.panState {
+			return m, nil
+		}
+		m.panState.encoding = false
+		if m.panState.presentationDirty {
+			m.panState.presentationDirty = false
+			return m, m.presentPanImage(opticalCrop(m.panState.visible, opticalCropFactor(m.opticalZoom)))
+		}
+		return m, nil
+
+	case bufferImageMsg:
+		if msg.owner != m.panState {
+			return m, nil
+		}
+		m.panState.busy = false
+		if msg.err != nil {
+			if msg.buffer != nil && msg.buffer.key != m.currentRenderKey() {
+				return m, m.renderMapCmd()
+			}
+			if m.panState.displayedSet && m.panState.displayed == m.currentRenderKey() {
+				// Keep the visible map if a background refill fails.
+				return m, nil
+			}
+			m.errMsg = msg.err.Error()
+			*m.lastAccepted = *m.renderGen
+			return m, nil
+		}
+		m.panState.buffer = msg.buffer
+		return m, m.renderMapCmd()
+
+	case panRenderTickMsg:
+		if msg.owner != m.panState || !m.panState.waiting {
+			return m, nil
+		}
+		m.panState.waiting = false
+		return m, m.renderMapCmd()
+
 	case tea.KeyMsg:
 		var hit bool
-		movement := (1000 / math.Pow(2, float64(m.zoom))) / 3
 
 		switch {
 		case key.Matches(msg, m.KeyMap.Up):
-			m.lat += movement
-			if m.lat > 90.0 {
-				m.lat = -90.0
-			}
-			hit = true
+			return m.arrowPan(0, -osmPxPerCellH)
 		case key.Matches(msg, m.KeyMap.Right):
-			m.lng += movement
-			if m.lng > 180.0 {
-				m.lng = -180.0
-			}
-			hit = true
+			return m.arrowPan(2*osmPxPerCellW, 0)
 		case key.Matches(msg, m.KeyMap.Down):
-			m.lat -= movement
-			if m.lat < -90.0 {
-				m.lat = 90.0
-			}
-			hit = true
+			return m.arrowPan(0, osmPxPerCellH)
 		case key.Matches(msg, m.KeyMap.Left):
-			m.lng -= movement
-			if m.lng < -180.0 {
-				m.lng = 180.0
-			}
-			hit = true
+			return m.arrowPan(-2*osmPxPerCellW, 0)
 		case key.Matches(msg, m.KeyMap.ZoomIn):
 			if m.zoom < 16 {
 				m.zoom += 1
@@ -1033,6 +1108,9 @@ func (m *Model) renderMapCmd() tea.Cmd {
 	if picRows <= 0 {
 		return nil
 	}
+	if m.panBufferTiles > 0 {
+		return m.renderBufferedMapCmd()
+	}
 
 	if m.renderGen == nil {
 		var g uint64
@@ -1089,17 +1167,7 @@ func (m *Model) renderMapCmd() tea.Cmd {
 		ctx.SetCenter(s2.LatLngFromDegrees(lat, lng))
 		ctx.SetZoom(tileZoom)
 		ctx.SetSize(mapW, mapH)
-		for _, mk := range markers {
-			col := mk.Color
-			if col == nil {
-				col = color.RGBA{0xff, 0x00, 0x00, 0xff}
-			}
-			size := mk.Size
-			if size == 0 {
-				size = 16
-			}
-			ctx.AddObject(sm.NewMarker(s2.LatLngFromDegrees(mk.Lat, mk.Lng), col, size))
-		}
+		addMapMarkers(ctx, markers, lat, lng, tileZoom, provider.TileSize)
 		mapImg, err := ctx.Render()
 		if err != nil {
 			return mapImageMsg{gen: gen, key: key, img: nil, err: err}

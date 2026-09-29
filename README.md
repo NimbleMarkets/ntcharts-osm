@@ -61,6 +61,30 @@ task build-ex-mapview
 ./bin/ntcharts-osm-mapview
 ```
 
+The native demo buffers a one-tile border around the map. Arrows move two
+columns horizontally or one row vertically with a critically damped
+[Harmonica](https://github.com/charmbracelet/harmonica) spring, cropping the
+buffered image during movement and refilling it in the background near an edge.
+The animation targets 60 updates per second; actual display rate depends on
+the terminal and transport. Repeated arrows preserve velocity and move the
+target; zooming or selecting a location cancels the previous trajectory.
+Other consumers can enable this with
+`mapview.Config{PanBuffer: 1, SmoothPan: true}` (up to 4 tile widths per
+side). It uses more memory and fetches surrounding tiles in exchange for
+responsive panning. Buffered rendering runs one tile render and one Kitty
+presentation at a time, coalescing input to the latest view without waiting
+for key repeats to stop. `RenderDebounce` applies only when buffering is off.
+
+For a compatible local Kitty/Ghostty terminal, try shared-memory transport:
+
+```sh
+go run ./examples/mapview -medium shm
+```
+
+Press `g` to select Kitty rendering. The default `-medium direct` also works
+over SSH. Call `mv.Close()` after your Bubble Tea program exits to release
+pending shared-memory images.
+
 ## Tile styles
 
 `mapview.SetStyle(...)` switches between nine tile providers from [`flopp/go-staticmaps`](https://github.com/flopp/go-staticmaps): `Wikimedia`, `OpenStreetMaps`, `OpenTopoMap`, `OpenCycleMap`, `CartoLight`, `CartoDark`, `StamenToner`, `StamenTerrain`, `ArcgisWorldImagery`. Each comes with the upstream provider's terms-of-use and attribution requirements — read them before shipping a public app.
@@ -74,7 +98,7 @@ task build-ex-mapview
 
 `mv.SetRenderMode(mode)` returns a `tea.Cmd` that re-renders at the new mode. Toggling away from Kitty automatically deletes the uploaded image so no ghost stays in the terminal.
 
-The WASM browser demo requests Kitty shared-memory transport through booba v0.7.0. Press `g` to switch from the initial glyph mode to Kitty rendering. Native demos keep direct transmission, including over SSH. Other consumers can opt in with `mapview.Config{KittyMedium: mapview.KittyMediumSharedMemory}` when their terminal or browser bridge supports it. Shared-memory allocation or bridge failures fall back to direct transmission.
+The WASM browser demo requests Kitty shared-memory transport through booba v0.7.0. Press `g` to switch from the initial glyph mode to Kitty rendering. Native demos default to direct transmission, including over SSH. Other consumers can opt in with `mapview.Config{KittyMedium: mapview.KittyMediumSharedMemory}` when their terminal or browser bridge supports it. Shared-memory allocation or bridge failures fall back to direct transmission.
 
 ## Bubble Tea version
 
@@ -110,7 +134,7 @@ For the narrower "is this message owned by mapview alone" predicate (the `MapCoo
 
 ## Known caveats
 
-- **Tile fetching is synchronous per render.** Each render builds its own `*sm.Context` inside the dispatched goroutine and tags the result with a generation counter, so rapid pan / zoom / resize fires safely-parallel renders and stale results are dropped. Composited images are kept in a small per-Model LRU keyed on `(lat, lng, zoom, cols, rows, style, oversample, markers)` — revisiting a state hits the cache synchronously (no goroutine, no Loading overlay). Default cap is 16 entries; tune via `mapview.NewWithConfig(Config{CacheCap: N})` (`-1` disables caching).
+- **Tile fetching is synchronous per render.** Each render builds its own `*sm.Context` inside a dispatched goroutine. With buffering off, generation counters discard stale results. With `PanBuffer` enabled, tile renders are serialized and completed buffers are cropped for the latest compatible camera position. Composited viewports are kept in a small per-Model LRU keyed on `(lat, lng, zoom, cols, rows, style, oversample, markers)` — revisiting a state hits the cache synchronously (no Loading overlay). Default cap is 16 entries; tune via `mapview.NewWithConfig(Config{CacheCap: N})` (`-1` disables this LRU; an explicitly enabled pan buffer remains active).
 - **Server-side supersample (`Config.Oversample`).** Raises the source-image pixel density without changing visible geographic coverage — `Oversample: N` (powers of 2) renders the same area at `N×` per-cell resolution and `+log2(N)` OSM tile zoom, so Kitty terminals can downscale a sharper source. `1` (default) keeps current behavior; `2` is a noticeable boost; `4` is hi-DPI quality at ~16× the tile fetches. Capped so the effective tile zoom never exceeds 19. Glyph mode pays the cost without visible benefit.
 - **Client-side optical zoom (`Config.OpticalZoom` / `mv.SetOpticalZoom(n)`).** Magnifies the *cached* source image by cropping the center `1/2^n` of each axis and letting the renderer scale it back up to the cell rectangle. No network, no tile-render goroutine — switching is instant. Pixelated at high N (it's digital zoom in spirit even though we call it optical), but useful for going past the OSM tile-zoom ceiling or just inspecting fine detail without re-fetching. Composes with `Oversample`: e.g. `Oversample: 2` + `OpticalZoom: 1` is a 2× zoomed view rendered from a 2× supersampled source.
 - **Aspect-ratio guardrail (`Config.MaxAspectRatio` / `Config.LetterboxColor`).** Maps display correctly at any cell-rect AR — every pixel sits at its true geographic location — but at extreme ARs (a 100×5 status bar, say) viewers find the result disorienting because their mental model of "a map" is roughly square. `MaxAspectRatio: 3.0` lets the cell rect's AR range up to 3:1 in either direction; beyond that, the map portion is rendered at the boundary AR centered in the cell rect, with the rest filled by `LetterboxColor` (default opaque black; `color.Transparent` shows the terminal background through the bars). The letterbox is composed into the source image *before* picture renders, so Glyph and Kitty show identical letterbox geometry — toggling render modes doesn't change layout. Default `0` keeps the current "fill the cell rect at any AR" behavior; opt in when your layout might land in extreme territory.
